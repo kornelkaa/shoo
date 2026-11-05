@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"ytblock/internal/certs"
@@ -27,7 +28,9 @@ const usage = `ytblock - block ads in Safari on macOS
 Usage:
   ytblock init-ca [-force]     create this Mac's YouTube-only certificate
   ytblock trust                trust the certificate (asks for your password)
-  ytblock update-lists         download the ad-domain list for other websites
+  ytblock update-lists [-level strict|balanced|max]
+                               download ad-domain lists for other websites
+                               (strict = default; balanced if sites break; max = most blocking)
   ytblock run [-sites=false]   start the proxy (-sites=false: YouTube only)
   sudo ytblock enable [-force] turn ytblock on in macOS network settings
   sudo ytblock disable         turn ytblock off in macOS network settings
@@ -49,7 +52,8 @@ func main() {
 	addr := fs.String("addr", defaultAddr, "proxy listen address (loopback only)")
 	force := fs.Bool("force", false, "init-ca: replace existing CA; enable: replace another PAC setting")
 	sitesOn := fs.Bool("sites", true, "run: also block ad domains on other websites")
-	listURL := fs.String("url", sites.DefaultListURL, "update-lists: block list to download")
+	level := fs.String("level", sites.DefaultLevel, "update-lists: strict, balanced or max")
+	listURLs := fs.String("url", "", "update-lists: comma-separated list URLs (instead of -level)")
 	fs.Parse(os.Args[2:])
 	if err := requireLoopback(*addr); err != nil {
 		log.Fatal(err)
@@ -84,8 +88,15 @@ func main() {
 	case "status":
 		status(dir, *addr, pacURL)
 	case "update-lists":
+		urls, ok := sites.Levels[*level]
+		if *listURLs != "" {
+			urls, ok = strings.Split(*listURLs, ","), true
+		}
+		if !ok {
+			log.Fatalf("unknown level %q: use strict, balanced or max", *level)
+		}
 		var n int
-		n, err = sites.Update(context.Background(), dir, *listURL)
+		n, err = sites.Update(context.Background(), dir, urls)
 		if err == nil {
 			fmt.Printf("Saved %d ad domains. A running proxy picks them up within a minute.\n", n)
 		}

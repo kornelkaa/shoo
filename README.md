@@ -6,8 +6,8 @@ Blocks ads in Safari on macOS.
   `playerAds`, `adSlots`, `adBreakHeartbeatParams`) from YouTube's watch pages
   and API responses before Safari sees them.
 - **Other websites:** connections to known ad and tracker domains are refused
-  ([StevenBlack hosts list](https://github.com/StevenBlack/hosts), ~78k domains).
-  Nothing is decrypted for these sites.
+  ([StevenBlack](https://github.com/StevenBlack/hosts) + [HaGeZi Pro](https://github.com/hagezi/dns-blocklists),
+  ~280k domains). Nothing is decrypted for these sites.
 
 The two parts are separate. YouTube always goes to the YouTube code, and YouTube
 domains can never be blocked by the ad-domain list.
@@ -33,7 +33,7 @@ Status: steps 1–2 of 5 plus other-site blocking. No installer or background se
 go build -o ytblock ./cmd/ytblock
 ./ytblock init-ca          # create this Mac's YouTube-only certificate
 ./ytblock trust            # trust it (macOS asks for your password)
-./ytblock update-lists     # download the ad-domain list for other websites
+./ytblock update-lists     # download ad-domain lists for other websites
 ./ytblock run              # leave running; logs each ad field removed
 sudo ./ytblock enable      # in another terminal: point macOS at the PAC file
 ./ytblock status
@@ -41,6 +41,15 @@ sudo ./ytblock enable      # in another terminal: point macOS at the PAC file
 
 Then quit and reopen Safari. The proxy logs `blocked <domain>` for ad requests on
 other sites and `removed N ad fields` on YouTube.
+
+Blocking levels (`./ytblock update-lists -level ...`), scored on the
+[d3ward ad-block test](https://d3ward.github.io/toolz/adblock) domains:
+
+| Level | Lists | Domains | Test score |
+|---|---|---|---|
+| `balanced` | StevenBlack | ~78k | 77% |
+| `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
+| `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
 If a website breaks: `./ytblock allow example.com`. To block something extra:
 `./ytblock block ads.example.com`. Changes apply within a minute. Run YouTube-only

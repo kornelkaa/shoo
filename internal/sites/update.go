@@ -12,48 +12,55 @@ import (
 	"time"
 )
 
-// DefaultListURL is StevenBlack's hosts list: ads and malware, MIT licensed.
-const DefaultListURL = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+// Block lists that update-lists can download.
+const (
+	// StevenBlack: ads and malware, hosts format, MIT licensed.
+	StevenBlackURL = "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+	// HaGeZi Pro: ads, trackers, analytics, telemetry; built to rarely break sites.
+	HaGeZiProURL = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro-onlydomains.txt"
+	// HaGeZi Pro++: stricter; more blocked, more chance a site breaks.
+	HaGeZiProPlusURL = "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/pro.plus-onlydomains.txt"
+)
+
+// Levels are the list combinations users pick with `update-lists -level`.
+var Levels = map[string][]string{
+	"balanced": {StevenBlackURL},
+	"strict":   {StevenBlackURL, HaGeZiProURL},
+	"max":      {StevenBlackURL, HaGeZiProPlusURL},
+}
+
+// DefaultLevel is used when no level is given.
+const DefaultLevel = "strict"
 
 const (
 	maxListBytes = 32 << 20
 	minDomains   = 1000 // a smaller list means the download went wrong
 )
 
-// Update downloads the block list from url and saves it in dir.
+// Update downloads every list in urls, merges them without duplicates, and
+// saves the result in dir. If any download fails, the old list is kept.
 // It returns the number of domains saved.
-func Update(ctx context.Context, dir, url string) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, err
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("download failed: %s", resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListBytes+1))
-	if err != nil {
-		return 0, err
-	}
-	if len(body) > maxListBytes {
-		return 0, fmt.Errorf("list is larger than %d MB", maxListBytes>>20)
-	}
-	domains, err := ParseHosts(bytes.NewReader(body))
-	if err != nil {
-		return 0, err
-	}
-	if len(domains) < minDomains {
-		return 0, fmt.Errorf("list has only %d domains; keeping the old one", len(domains))
+func Update(ctx context.Context, dir string, urls []string) (int, error) {
+	seen := map[string]bool{}
+	var domains []string
+	for _, u := range urls {
+		got, err := download(ctx, u)
+		if err != nil {
+			return 0, fmt.Errorf("%s: %w", u, err)
+		}
+		for _, d := range got {
+			if !seen[d] {
+				seen[d] = true
+				domains = append(domains, d)
+			}
+		}
 	}
 
 	var out strings.Builder
-	fmt.Fprintf(&out, "# Source: %s\n# Downloaded: %s\n", url, time.Now().UTC().Format(time.RFC3339))
+	for _, u := range urls {
+		fmt.Fprintf(&out, "# Source: %s\n", u)
+	}
+	fmt.Fprintf(&out, "# Downloaded: %s\n", time.Now().UTC().Format(time.RFC3339))
 	for _, d := range domains {
 		out.WriteString(d)
 		out.WriteByte('\n')
@@ -62,6 +69,38 @@ func Update(ctx context.Context, dir, url string) (int, error) {
 		return 0, err
 	}
 	return len(domains), nil
+}
+
+func download(ctx context.Context, url string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxListBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxListBytes {
+		return nil, fmt.Errorf("list is larger than %d MB", maxListBytes>>20)
+	}
+	domains, err := ParseHosts(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if len(domains) < minDomains {
+		return nil, fmt.Errorf("list has only %d domains; keeping the old list", len(domains))
+	}
+	return domains, nil
 }
 
 // AddDomain appends a domain to the user's block or allow file, if it isn't

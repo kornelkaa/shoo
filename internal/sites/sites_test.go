@@ -2,6 +2,8 @@ package sites
 
 import (
 	"bufio"
+	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -188,5 +190,49 @@ func TestValidateDomain(t *testing.T) {
 		if _, err := ValidateDomain(bad); err == nil {
 			t.Errorf("ValidateDomain(%q) should fail", bad)
 		}
+	}
+}
+
+func TestUpdateMergesListsAndKeepsOldOnFailure(t *testing.T) {
+	big := func(prefix string) string {
+		var b strings.Builder
+		for i := 0; i < minDomains; i++ {
+			fmt.Fprintf(&b, "%s%d.example.com\n", prefix, i)
+		}
+		return b.String()
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hosts":
+			io.WriteString(w, "0.0.0.0 shared.example.com\n"+strings.ReplaceAll(big("a"), "\n", "\n0.0.0.0 "))
+		case "/plain":
+			io.WriteString(w, "shared.example.com\n"+big("b"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	n, err := Update(context.Background(), dir, []string{srv.URL + "/hosts", srv.URL + "/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2*minDomains + 1; n != want { // shared.example.com counted once
+		t.Fatalf("saved %d domains, want %d", n, want)
+	}
+	l, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Blocked("a5.example.com") || !l.Blocked("b5.example.com") || !l.Blocked("shared.example.com") {
+		t.Error("merged list incomplete")
+	}
+
+	if _, err := Update(context.Background(), dir, []string{srv.URL + "/plain", srv.URL + "/missing"}); err == nil {
+		t.Fatal("a failed download should fail the update")
+	}
+	if l, _ := Load(dir); !l.Blocked("a5.example.com") {
+		t.Error("old list should be kept when an update fails")
 	}
 }

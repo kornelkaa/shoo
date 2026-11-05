@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/sha1"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"ytblock/internal/certs"
+	"ytblock/internal/sites"
 )
 
 func loginKeychain() (string, error) {
@@ -182,6 +184,22 @@ func status(dir, addr, pacURL string) {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 		fmt.Println("  running")
+	}
+
+	fmt.Println("Other websites:")
+	if fi, err := os.Stat(filepath.Join(dir, sites.BlocklistFile)); err != nil {
+		fmt.Println("  no ad-domain list (run `ytblock update-lists`)")
+	} else if l, err := sites.Load(dir); err == nil {
+		fmt.Printf("  %d ad domains, list updated %s\n", l.Len(), fi.ModTime().Format("2006-01-02 15:04"))
+	}
+	var st sites.Stats
+	if resp, err := c.Get("http://" + addr + "/stats"); err == nil {
+		if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil {
+			fmt.Printf("  %d requests blocked since the proxy started\n", st.Blocked)
+		} else {
+			fmt.Println("  proxy is running YouTube-only (-sites=false)")
+		}
+		resp.Body.Close()
 	}
 
 	fmt.Println("Network services:")

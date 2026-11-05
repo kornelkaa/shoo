@@ -75,6 +75,21 @@ Limits on other websites: empty ad boxes can remain, and ads served from a site'
 domain (Facebook, Instagram, Reddit sponsored posts) aren't blocked. Other Mac apps
 that use the system proxy settings also get ad domains blocked.
 
+## When an ad gets through
+
+`ytblock-debug` runs exactly like `ytblock run` (same YouTube and other-site code,
+unchanged) and also records what YouTube sends. Use it in place of the normal proxy
+until an ad gets through:
+
+```sh
+go build -o ytblock-debug ./cmd/ytblock-debug
+./ytblock-debug        # stop `ytblock run` first; Ctrl+C when done
+```
+
+Results go to `~/Library/Logs/ytblock-debug/<time>/events.log` and stay on your Mac.
+`AD-EVENT` lines are the player reporting an ad; `LEAK?` lines are responses that still
+contain ad data after ytblock's removal (saved in `responses/`).
+
 ## Uninstall
 
 ```sh

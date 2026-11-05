@@ -25,24 +25,42 @@ everything else    → direct, never touches ytblock
 - If the proxy stops, Safari falls back to connecting directly: websites and YouTube keep
   working, YouTube with ads. Ad domains stay blocked.
 
-Status: steps 1–2 of 5 plus other-site blocking. No installer or background service yet.
+## Install
 
-## Try it
+With Homebrew (once the repo is public):
+
+```sh
+brew install kornelkaa/tap/ytblock
+ytblock setup
+```
+
+From source:
 
 ```sh
 go build -o ytblock ./cmd/ytblock
-./ytblock init-ca          # create this Mac's YouTube-only certificate
-./ytblock trust            # trust it (macOS asks for your password)
-./ytblock update-lists     # download ad-domain lists for other websites
-./ytblock run              # leave running; logs each ad field removed
-sudo ./ytblock enable      # in another terminal: point macOS at the PAC file
-./ytblock status
+./ytblock setup
 ```
 
-Then quit and reopen Safari. The proxy logs `blocked <domain>` for ad requests on
-other sites and `removed N ad fields` on YouTube.
+`setup` asks for your password twice (once to trust the certificate, once to change the
+network setting), then:
 
-Blocking levels (`./ytblock update-lists -level ...`), scored on the
+1. creates this Mac's YouTube-only certificate and trusts it
+2. downloads the ad-domain lists (refreshed automatically every week)
+3. installs a background service that starts at login and restarts if it stops
+4. points macOS at the PAC file
+
+Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
+
+## Everyday use
+
+```sh
+ytblock status                      # is everything on?
+ytblock allow example.com           # a site broke: never block it
+ytblock block ads.example.com       # block something extra
+ytblock update-lists -level balanced   # fewer blocked domains if sites break (strict = default, max = most)
+```
+
+Blocking levels, scored on the
 [d3ward ad-block test](https://d3ward.github.io/toolz/adblock) domains:
 
 | Level | Lists | Domains | Test score |
@@ -51,21 +69,24 @@ Blocking levels (`./ytblock update-lists -level ...`), scored on the
 | `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
 | `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
-If a website breaks: `./ytblock allow example.com`. To block something extra:
-`./ytblock block ads.example.com`. Changes apply within a minute. Run YouTube-only
-with `./ytblock run -sites=false`.
+Log: `~/Library/Logs/ytblock.log` (`blocked <domain>` for other sites, `removed N ad fields` on YouTube).
 
 Limits on other websites: empty ad boxes can remain, and ads served from a site's own
 domain (Facebook, Instagram, Reddit sponsored posts) aren't blocked. Other Mac apps
 that use the system proxy settings also get ad domains blocked.
 
-## Undo
+## Uninstall
 
 ```sh
-sudo ./ytblock disable
-./ytblock untrust
-rm -rf ~/Library/Application\ Support/ytblock
+ytblock uninstall          # turns everything off; add -purge to also delete settings and lists
+brew uninstall ytblock     # if installed with Homebrew
 ```
+
+## Releasing
+
+`scripts/release.sh 0.1.0` (from `main`, repo must be public) tags the release, creates it
+on GitHub, and fills in `url` and `sha256` in `packaging/homebrew/ytblock.rb`. Copy that file
+to `Formula/ytblock.rb` in the `kornelkaa/homebrew-tap` repo.
 
 ## Layout
 
@@ -77,10 +98,9 @@ YouTube (frozen; `scripts/check-youtube-untouched.sh` checks it matches `main`):
 Other websites:
 - `internal/sites` – ad-domain list, combined PAC file, refusing blocked domains
 
-- `cmd/ytblock` – CLI and macOS integration (`security`, `networksetup`)
+- `cmd/ytblock` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
+- `packaging/homebrew` – Homebrew formula
 
 ## Next steps
 
-3. launchd agent so the proxy starts at login
-4. `install.sh` / `ytblock uninstall`
-5. Signed rules updates, and a check that the PAC setting is still in place
+- Signed rules file so YouTube rule fixes reach users without reinstalling

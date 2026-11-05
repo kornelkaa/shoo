@@ -186,6 +186,13 @@ func status(dir, addr, pacURL string) {
 		fmt.Println("  running")
 	}
 
+	fmt.Println("Background service:")
+	if agentLoaded() {
+		fmt.Println("  installed (starts at login)")
+	} else {
+		fmt.Println("  not installed (run `ytblock setup`)")
+	}
+
 	fmt.Println("Other websites:")
 	if fi, err := os.Stat(filepath.Join(dir, sites.BlocklistFile)); err != nil {
 		fmt.Println("  no ad-domain list (run `ytblock update-lists`)")

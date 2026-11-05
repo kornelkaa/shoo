@@ -23,21 +23,30 @@ import (
 
 const defaultAddr = "127.0.0.1:8899"
 
+// version is set at build time: -ldflags "-X main.version=0.1.0".
+var version = "dev"
+
 const usage = `ytblock - block ads in Safari on macOS
 
 Usage:
+  ytblock setup                turn everything on (asks for your password twice)
+  ytblock uninstall [-purge]   turn everything off (-purge: also delete settings and lists)
+  ytblock status               show what's set up
+
+  ytblock block DOMAIN         always block a domain on other websites
+  ytblock allow DOMAIN         never block a domain (if a site breaks)
+  ytblock update-lists [-level strict|balanced|max]
+                               download ad-domain lists now (also refreshed weekly)
+                               (strict = default; balanced if sites break; max = most blocking)
+  ytblock version
+
+Individual steps (setup does these for you):
   ytblock init-ca [-force]     create this Mac's YouTube-only certificate
   ytblock trust                trust the certificate (asks for your password)
-  ytblock update-lists [-level strict|balanced|max]
-                               download ad-domain lists for other websites
-                               (strict = default; balanced if sites break; max = most blocking)
   ytblock run [-sites=false]   start the proxy (-sites=false: YouTube only)
   sudo ytblock enable [-force] turn ytblock on in macOS network settings
   sudo ytblock disable         turn ytblock off in macOS network settings
   ytblock untrust              remove the certificate from the keychain
-  ytblock block DOMAIN         always block a domain on other websites
-  ytblock allow DOMAIN         never block a domain (if a site breaks)
-  ytblock status               show what's set up
 
 All commands accept -addr (default ` + defaultAddr + `).
 `
@@ -54,6 +63,7 @@ func main() {
 	sitesOn := fs.Bool("sites", true, "run: also block ad domains on other websites")
 	level := fs.String("level", sites.DefaultLevel, "update-lists: strict, balanced or max")
 	listURLs := fs.String("url", "", "update-lists: comma-separated list URLs (instead of -level)")
+	purge := fs.Bool("purge", false, "uninstall: also delete settings, lists and the log")
 	fs.Parse(os.Args[2:])
 	if err := requireLoopback(*addr); err != nil {
 		log.Fatal(err)
@@ -66,6 +76,12 @@ func main() {
 	}
 
 	switch cmd {
+	case "setup":
+		err = setup(dir, *addr, pacURL)
+	case "uninstall":
+		err = uninstall(dir, *addr, pacURL, *purge)
+	case "version", "-version", "--version":
+		fmt.Println("ytblock", version)
 	case "init-ca":
 		err = certs.Generate(dir, *force)
 		if err == nil {
@@ -153,6 +169,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		}
 		h := sites.NewHandler(p, addr, list, logger)
 		go h.Watch(dir, 30*time.Second)
+		go sites.AutoUpdate(context.Background(), dir, 7*24*time.Hour, logger)
 		handler = h
 		logger.Printf("blocking %d ad domains on other websites", list.Len())
 	}
@@ -162,7 +179,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          logger,
 	}
-	logger.Printf("listening on %s (PAC file: http://%s/proxy.pac)", addr, addr)
+	logger.Printf("ytblock %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
 }
 

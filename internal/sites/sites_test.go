@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const hostsSample = `# StevenBlack-style hosts file
@@ -234,5 +235,27 @@ func TestUpdateMergesListsAndKeepsOldOnFailure(t *testing.T) {
 	}
 	if l, _ := Load(dir); !l.Blocked("a5.example.com") {
 		t.Error("old list should be kept when an update fails")
+	}
+}
+
+func TestSourcesAndNeedsUpdate(t *testing.T) {
+	dir := t.TempDir()
+	if !needsUpdate(dir, time.Hour) {
+		t.Error("missing list should need an update")
+	}
+	if Sources(dir) != nil {
+		t.Error("no sources expected without a list")
+	}
+	os.WriteFile(filepath.Join(dir, BlocklistFile), []byte("# Source: https://a.example/list\n# Source: https://b.example/list\n# Downloaded: x\nads.example.com\n# Source: https://not-header\n"), 0o644)
+	if got := strings.Join(Sources(dir), ","); got != "https://a.example/list,https://b.example/list" {
+		t.Errorf("Sources = %s", got)
+	}
+	if needsUpdate(dir, time.Hour) {
+		t.Error("fresh list should not need an update")
+	}
+	old := time.Now().Add(-8 * 24 * time.Hour)
+	os.Chtimes(filepath.Join(dir, BlocklistFile), old, old)
+	if !needsUpdate(dir, 7*24*time.Hour) {
+		t.Error("8-day-old list should need an update")
 	}
 }

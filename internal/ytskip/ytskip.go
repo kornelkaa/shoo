@@ -12,6 +12,8 @@
 package ytskip
 
 import (
+	"shoo/internal/certs"
+
 	"bytes"
 	"io"
 	"log"
@@ -63,6 +65,9 @@ type Transport struct {
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !certs.Allowed(req.URL.Hostname()) {
+		return t.Next.RoundTrip(req) // the proxy carries every site; only YouTube gets the script
+	}
 	resp, err := t.Next.RoundTrip(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return resp, err

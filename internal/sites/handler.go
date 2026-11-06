@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,13 +13,13 @@ import (
 	"time"
 )
 
-// Handler sits in front of the YouTube proxy. It serves the combined PAC
-// file, refuses blocked ad domains, and passes every other request to the
-// YouTube proxy unchanged.
+// Handler sits in front of the proxy. It serves the PAC file and stats and
+// passes every other request to the proxy, which asks Blocked and Decrypt
+// what to do with each site.
 type Handler struct {
-	YouTube http.Handler // the existing YouTube proxy
-	Addr    string
-	Log     *log.Logger
+	Proxy http.Handler
+	Addr  string
+	Log   *log.Logger
 
 	list    atomic.Pointer[List]
 	pac     atomic.Pointer[string]
@@ -28,8 +27,8 @@ type Handler struct {
 }
 
 // NewHandler wraps the YouTube proxy with ad-domain blocking.
-func NewHandler(youtube http.Handler, addr string, list *List, logger *log.Logger) *Handler {
-	h := &Handler{YouTube: youtube, Addr: addr, Log: logger}
+func NewHandler(proxy http.Handler, addr string, list *List, logger *log.Logger) *Handler {
+	h := &Handler{Proxy: proxy, Addr: addr, Log: logger}
 	h.SetList(list)
 	return h
 }
@@ -62,29 +61,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if host := targetHost(r); host != "" && h.list.Load().Blocked(host) {
-		h.blocked.Add(1)
-		h.Log.Printf("blocked %s", host)
-		http.Error(w, "blocked by shoo", http.StatusForbidden)
-		return
-	}
-	h.YouTube.ServeHTTP(w, r)
+	h.Proxy.ServeHTTP(w, r)
 }
 
-// targetHost is the site a proxy request is for (without the port).
-func targetHost(r *http.Request) string {
-	hostport := r.Host
-	if r.Method != http.MethodConnect {
-		if !r.URL.IsAbs() {
-			return ""
-		}
-		hostport = r.URL.Host
+// Blocked reports whether host is an ad domain, and counts and logs it.
+// The proxy answers such requests itself (inside the decrypted connection,
+// so macOS has nothing to retry directly).
+func (h *Handler) Blocked(host string) bool {
+	if !h.list.Load().Blocked(host) {
+		return false
 	}
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		return h
-	}
-	return hostport
+	h.blocked.Add(1)
+	h.Log.Printf("blocked %s", host)
+	return true
 }
+
+// Decrypt reports whether the proxy may decrypt host.
+func (h *Handler) Decrypt(host string) bool { return h.list.Load().Decrypt(host) }
 
 // Watch reloads the list when any list file in dir changes.
 func (h *Handler) Watch(dir string, every time.Duration) {
@@ -107,7 +100,7 @@ func (h *Handler) Watch(dir string, every time.Duration) {
 
 func listFilesState(dir string) string {
 	var b strings.Builder
-	for _, f := range []string{BlocklistFile, BlockFile, AllowFile} {
+	for _, f := range []string{BlocklistFile, BlockFile, AllowFile, SkipFile} {
 		if fi, err := os.Stat(filepath.Join(dir, f)); err == nil {
 			fmt.Fprintf(&b, "%d/%d;", fi.ModTime().UnixNano(), fi.Size())
 		} else {
@@ -115,4 +108,15 @@ func listFilesState(dir string) string {
 		}
 	}
 	return b.String()
+}
+
+// WatchFiles calls changed whenever a list file in dir changes.
+func WatchFiles(dir string, every time.Duration, changed func()) {
+	last := listFilesState(dir)
+	for range time.Tick(every) {
+		if cur := listFilesState(dir); cur != last {
+			last = cur
+			changed()
+		}
+	}
 }

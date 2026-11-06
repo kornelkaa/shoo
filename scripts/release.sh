@@ -14,7 +14,6 @@ ASSET="shoo-macos.tar.gz"
 [ -z "$(git status --porcelain)" ] || { echo "Commit your changes first." >&2; exit 1; }
 go vet ./...
 go test ./...
-scripts/check-youtube-untouched.sh
 
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT

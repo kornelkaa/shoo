@@ -80,36 +80,56 @@ func TestBlocked(t *testing.T) {
 }
 
 func TestPACContents(t *testing.T) {
-	pac := PAC("127.0.0.1:8899", sampleList(t))
+	l := sampleList(t)
+	l.AddSkip([]string{"mybank.example"})
+	pac := PAC("127.0.0.1:8899", l)
 	for _, want := range []string{
-		`var YT = ["youtube.com","youtubei.googleapis.com"]`,
-		`return "PROXY 127.0.0.1:8899; DIRECT"`, // YouTube: same as the YouTube-only PAC
-		`return "PROXY 127.0.0.1:8899";`,        // blocked: no DIRECT fallback
-		`"doubleclick.net":1`,
-		`"googlevideo.com":1`, // in KEEP
+		`return "PROXY 127.0.0.1:8899; DIRECT"`, // everything else: through shoo, direct if it's off
+		`"googlevideo.com":1`,                   // never decrypted
+		`"accounts.google.com":1`,
+		`"otpbank.hu":1`,
+		`"mybank.example":1`,
+		`isPlainHostName(host)`,
 	} {
 		if !strings.Contains(pac, want) {
 			t.Errorf("PAC missing %q", want)
 		}
 	}
-	for _, bad := range []string{`"ad.doubleclick.net"`, `"ads.youtube.com"`, `"r1---sn-abc.googlevideo.com"`} {
-		if strings.Contains(pac, bad) {
-			t.Errorf("PAC should not contain %s", bad)
+	if strings.Contains(pac, "doubleclick") || len(pac) > 64<<10 {
+		t.Errorf("PAC should not list ad domains (%d bytes)", len(pac))
+	}
+}
+
+func TestDecrypt(t *testing.T) {
+	l := sampleList(t)
+	l.AddSkip([]string{"mybank.example"})
+	for host, want := range map[string]bool{
+		"www.dictionary.com":          true,
+		"www.youtube.com":             true,
+		"doubleclick.net":             true,
+		"accounts.google.com":         false,
+		"r1---sn-abc.googlevideo.com": false,
+		"login.mybank.example":        false,
+		"www.otpbank.hu":              false,
+		"appleid.apple.com":           false,
+	} {
+		if got := l.Decrypt(host); got != want {
+			t.Errorf("Decrypt(%q) = %v, want %v", host, got, want)
 		}
 	}
 }
 
-// fakeYouTube records which requests reached the YouTube proxy.
-type fakeYouTube struct{ got []string }
+// fakeProxy records which requests reached the proxy.
+type fakeProxy struct{ got []string }
 
-func (f *fakeYouTube) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *fakeProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.got = append(f.got, r.Method+" "+r.Host)
 	w.WriteHeader(299)
 }
 
 func TestHandlerRouting(t *testing.T) {
-	yt := &fakeYouTube{}
-	h := NewHandler(yt, "127.0.0.1:8899", sampleList(t), log.New(io.Discard, "", 0))
+	px := &fakeProxy{}
+	h := NewHandler(px, "127.0.0.1:8899", sampleList(t), log.New(io.Discard, "", 0))
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
@@ -127,14 +147,18 @@ func TestHandlerRouting(t *testing.T) {
 		return resp.StatusCode
 	}
 
-	if code := connect("securepubads.g.doubleclick.net:443"); code != http.StatusForbidden {
-		t.Errorf("blocked CONNECT: got %d, want 403", code)
+	// All proxy requests, ad domains included, go to the proxy, which
+	// asks Blocked (refusing here would make macOS connect directly).
+	for _, target := range []string{"securepubads.g.doubleclick.net:443", "www.youtube.com:443"} {
+		if code := connect(target); code != 299 {
+			t.Errorf("CONNECT %s: got %d, want it passed to the proxy", target, code)
+		}
 	}
-	if code := connect("www.youtube.com:443"); code != 299 {
-		t.Errorf("YouTube CONNECT: got %d, want it passed to the YouTube proxy", code)
+	if len(px.got) != 2 {
+		t.Errorf("proxy got %v", px.got)
 	}
-	if len(yt.got) != 1 || yt.got[0] != "CONNECT www.youtube.com:443" {
-		t.Errorf("YouTube proxy got %v", yt.got)
+	if !h.Blocked("securepubads.g.doubleclick.net") || h.Blocked("www.youtube.com") || h.Decrypt("accounts.google.com") {
+		t.Error("Blocked/Decrypt wrong")
 	}
 
 	resp, err := http.Get(srv.URL + "/proxy.pac")
@@ -143,8 +167,8 @@ func TestHandlerRouting(t *testing.T) {
 	}
 	b, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if !strings.Contains(string(b), "FindProxyForURL") || !strings.Contains(string(b), "doubleclick.net") {
-		t.Error("combined PAC not served")
+	if !strings.Contains(string(b), "FindProxyForURL") {
+		t.Error("PAC not served")
 	}
 
 	resp, err = http.Get(srv.URL + "/stats")
@@ -257,5 +281,15 @@ func TestSourcesAndNeedsUpdate(t *testing.T) {
 	os.Chtimes(filepath.Join(dir, BlocklistFile), old, old)
 	if !needsUpdate(dir, 7*24*time.Hour) {
 		t.Error("8-day-old list should need an update")
+	}
+}
+
+// YouTube's page and API must stay decryptable, or its ad data can't be removed.
+func TestYouTubeNeverSkipped(t *testing.T) {
+	l := NewList(nil, nil)
+	for _, h := range []string{"www.youtube.com", "youtubei.googleapis.com", "m.youtube.com"} {
+		if !l.Decrypt(h) {
+			t.Errorf("%s is on the never-decrypt list", h)
+		}
 	}
 }

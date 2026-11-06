@@ -1,11 +1,16 @@
-// Package proxy is the local HTTP proxy. YouTube HTTPS connections are
-// decrypted so ad fields can be removed; every other connection is tunneled
-// through untouched.
+// Package proxy is the local HTTP proxy. It decrypts HTTPS so it can:
+//   - remove YouTube's ad data (internal/prune),
+//   - answer requests to ad domains itself, so they never load,
+//   - link stylesheets into pages that hide ad boxes (internal/cosmetic).
+//
+// Which sites are decrypted is up to Decrypt; the rest are tunneled through
+// untouched. Without Decrypt only YouTube is decrypted.
 package proxy
 
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -20,6 +25,7 @@ import (
 	"time"
 
 	"shoo/internal/certs"
+	"shoo/internal/cosmetic"
 	"shoo/internal/prune"
 )
 
@@ -28,14 +34,45 @@ const maxBody = 32 << 20 // responses bigger than this are passed through
 type Proxy struct {
 	CA    *certs.Authority
 	Rules prune.Rules
-	// Upstream sends requests to the real YouTube servers.
+	// Upstream sends requests to the real servers.
 	Upstream http.RoundTripper
 	Log      *log.Logger
 	// Addr is the proxy's own host:port, written into the PAC file.
 	Addr string
 
+	// Decrypt reports whether HTTPS to host may be decrypted (nil: YouTube only).
+	Decrypt func(host string) bool
+	// Blocked reports whether host is an ad domain; its requests get an empty
+	// 403 from the proxy instead of reaching the site (nil: nothing blocked).
+	Blocked func(host string) bool
+	// Cosmetic hides ad elements in decrypted pages (nil: off).
+	Cosmetic *cosmetic.Engine
+
 	once  sync.Once
 	conns *connListener
+	// rejected holds hosts whose client refused our certificate (an app
+	// that pins its certificates): they're tunneled from then on.
+	rejected sync.Map
+}
+
+func (p *Proxy) blocked(host string) bool { return p.Blocked != nil && p.Blocked(host) }
+
+// shouldDecrypt decides whether a CONNECT to host:443 is decrypted.
+func (p *Proxy) shouldDecrypt(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if !certs.ValidHost(host) {
+		return false
+	}
+	if p.Cosmetic != nil && host == cosmetic.AssetHost {
+		return true
+	}
+	if _, ok := p.rejected.Load(host); ok {
+		return false
+	}
+	if p.Decrypt == nil {
+		return certs.Allowed(host)
+	}
+	return p.Decrypt(host) || p.blocked(host)
 }
 
 // New returns a proxy with a sensible upstream transport.
@@ -62,6 +99,12 @@ func (p *Proxy) start() {
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ErrorLog:          p.Log,
+		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
+			if mc, ok := c.(*mitmConn); ok {
+				return context.WithValue(ctx, hostKey{}, mc.host)
+			}
+			return ctx
+		},
 	}
 	go srv.Serve(p.conns)
 }
@@ -104,14 +147,26 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	conn := &bufConn{Conn: clientConn, r: rw.Reader}
 
-	if port == "443" && certs.Allowed(host) {
-		p.intercept(conn, host)
+	if port == "443" && p.shouldDecrypt(host) {
+		p.intercept(conn, strings.ToLower(strings.TrimSuffix(host, ".")))
+		return
+	}
+	if p.blocked(host) {
+		conn.Close() // not decryptable (other port or IP): just end it
 		return
 	}
 	go tunnel(conn, r.Host)
 }
 
-// intercept terminates TLS with a YouTube-only certificate and hands the
+type hostKey struct{}
+
+// mitmConn is a decrypted connection and the site it was opened for.
+type mitmConn struct {
+	*tls.Conn
+	host string
+}
+
+// intercept terminates TLS with a certificate for the site and hands the
 // decrypted connection to the internal HTTP server.
 func (p *Proxy) intercept(conn net.Conn, connectHost string) {
 	tlsConn := tls.Server(conn, &tls.Config{
@@ -128,12 +183,18 @@ func (p *Proxy) intercept(conn net.Conn, connectHost string) {
 	go func() {
 		tlsConn.SetDeadline(time.Now().Add(15 * time.Second))
 		if err := tlsConn.Handshake(); err != nil {
-			p.Log.Printf("TLS handshake with client for %s failed: %v", connectHost, err)
+			if strings.Contains(err.Error(), "remote error") {
+				// The client refused our certificate (an app that only
+				// trusts its own). Stop decrypting this site.
+				p.rejected.Store(connectHost, time.Now())
+				p.Log.Printf("%s: the app refused shoo's certificate; no longer decrypting it", connectHost)
+			}
 			tlsConn.Close()
 			return
 		}
 		tlsConn.SetDeadline(time.Time{})
-		if !p.conns.push(tlsConn) {
+		mc := &mitmConn{Conn: tlsConn, host: connectHost}
+		if !p.conns.push(mc) {
 			tlsConn.Close()
 		}
 	}()
@@ -145,9 +206,10 @@ func (p *Proxy) reverseProxy() http.Handler {
 			pr.Out.URL.Scheme = "https"
 			pr.Out.URL.Host = pr.In.Host
 			pr.Out.Host = pr.In.Host
-			if p.Rules.Matches(pr.In.URL.Path) || wantsHTML(pr.In) {
+			yt := certs.Allowed(hostOnly(pr.In.Host))
+			if (yt && p.Rules.Matches(pr.In.URL.Path)) || ((yt || p.Cosmetic != nil) && isPage(pr.In)) {
 				// Let the Go transport request gzip and decompress it for us,
-				// so the body we edit is plain JSON.
+				// so the body we edit is plain JSON or HTML.
 				pr.Out.Header.Del("Accept-Encoding")
 			}
 		},
@@ -157,21 +219,60 @@ func (p *Proxy) reverseProxy() http.Handler {
 		ErrorLog:       p.Log,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// The Host header must stay within YouTube, whatever the client sends.
-		if !certs.Allowed(hostOnly(r.Host)) {
-			http.Error(w, "host not allowed", http.StatusForbidden)
+		// Requests always go to the site the connection was opened for,
+		// whatever Host header the client sends.
+		host, _ := r.Context().Value(hostKey{}).(string)
+		if host == "" {
+			http.Error(w, "unknown site", http.StatusBadRequest)
+			return
+		}
+		r.Host = host
+		if p.Cosmetic != nil && host == cosmetic.AssetHost {
+			p.Cosmetic.ServeAsset(w, r)
+			return
+		}
+		if p.blocked(host) {
+			w.WriteHeader(http.StatusForbidden)
 			return
 		}
 		rp.ServeHTTP(w, r)
 	})
 }
 
-// wantsHTML reports whether the browser is loading a page (watch page, home, ...).
-func wantsHTML(r *http.Request) bool {
-	return r.Method == http.MethodGet && strings.Contains(r.Header.Get("Accept"), "text/html")
+// isPage reports whether the browser is loading a page (or a frame in one),
+// not a script, image or API call.
+func isPage(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "document", "iframe", "frame":
+		return true
+	case "":
+		return strings.Contains(r.Header.Get("Accept"), "text/html")
+	}
+	return false
 }
 
 func (p *Proxy) modifyResponse(resp *http.Response) error {
+	host := hostOnly(resp.Request.Host)
+	if certs.Allowed(host) {
+		if err := p.pruneYouTube(resp); err != nil {
+			return err
+		}
+	}
+	if p.Cosmetic != nil && resp.StatusCode == http.StatusOK && isPage(resp.Request) {
+		mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+		ce := resp.Header.Get("Content-Encoding")
+		if mt == "text/html" && (ce == "" || ce == "identity") {
+			p.Cosmetic.Inject(host, resp)
+		}
+	}
+	return nil
+}
+
+// pruneYouTube removes ad data from YouTube's player responses and pages.
+func (p *Proxy) pruneYouTube(resp *http.Response) error {
 	path := resp.Request.URL.Path
 	if resp.StatusCode != http.StatusOK {
 		return nil
@@ -238,9 +339,9 @@ func setBody(resp *http.Response, b []byte) {
 }
 
 // plainHTTP forwards http:// requests (e.g. http://youtube.com, which just
-// redirects to https).
+// redirects to https). Ad domains get an empty 403.
 func (p *Proxy) plainHTTP() http.Handler {
-	return &httputil.ReverseProxy{
+	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			u := *pr.In.URL
 			pr.Out.URL = &u
@@ -249,6 +350,13 @@ func (p *Proxy) plainHTTP() http.Handler {
 		Transport: p.Upstream,
 		ErrorLog:  p.Log,
 	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p.blocked(r.URL.Hostname()) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		rp.ServeHTTP(w, r)
+	})
 }
 
 func tunnel(client net.Conn, target string) {

@@ -1,8 +1,12 @@
 // Package certs creates and uses the per-machine certificate authority.
 //
-// The CA carries a name constraint, so browsers that enforce constraints
-// (Chrome, Safari) reject anything it signs for sites other than YouTube.
-// Even if the key leaked, it couldn't be used to impersonate other sites.
+// The proxy decrypts websites (to remove YouTube's ad data and hide ad boxes
+// everywhere), so the CA signs certificates for any site name. Its private
+// key never leaves this Mac and is readable only by the user. IP addresses
+// are excluded: the CA can't sign for them.
+//
+// CAs made by older versions were limited to YouTube by a name constraint;
+// Constrained detects those so setup can replace them.
 package certs
 
 import (
@@ -24,7 +28,8 @@ import (
 	"time"
 )
 
-// AllowedDomains are the only domains (and their subdomains) the CA may sign for.
+// AllowedDomains are YouTube's page and API domains (and their subdomains),
+// where YouTube's ad data is removed.
 var AllowedDomains = []string{"youtube.com", "youtubei.googleapis.com"}
 
 const (
@@ -72,8 +77,6 @@ func Generate(dir string, force bool) error {
 		MaxPathLenZero:        true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 
-		PermittedDNSDomainsCritical: true,
-		PermittedDNSDomains:         AllowedDomains,
 		ExcludedIPRanges: []*net.IPNet{
 			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
 			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
@@ -118,7 +121,7 @@ func randSerial() *big.Int {
 	return n
 }
 
-// Authority signs short-lived leaf certificates for YouTube hosts.
+// Authority signs short-lived leaf certificates for the sites the proxy decrypts.
 type Authority struct {
 	Cert    *x509.Certificate
 	key     *ecdsa.PrivateKey
@@ -162,9 +165,30 @@ func Load(dir string) (*Authority, error) {
 	return &Authority{Cert: cert, key: key, leafKey: leafKey, cache: map[string]*tls.Certificate{}}, nil
 }
 
-// LeafFor returns a certificate for host, refusing anything outside AllowedDomains.
+// Constrained reports whether a CA is limited to YouTube (made by an older
+// version of shoo).
+func Constrained(cert *x509.Certificate) bool {
+	return len(cert.PermittedDNSDomains) > 0
+}
+
+// ValidHost reports whether host is a site name the CA may sign for:
+// not an IP address, and only letters, digits, '-', '_' and dots.
+func ValidHost(host string) bool {
+	host = strings.TrimSuffix(host, ".")
+	if host == "" || len(host) > 253 || net.ParseIP(host) != nil || strings.HasPrefix(host, ".") || strings.Contains(host, "..") {
+		return false
+	}
+	for _, c := range strings.ToLower(host) {
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+// LeafFor returns a certificate for host.
 func (a *Authority) LeafFor(host string) (*tls.Certificate, error) {
-	if !Allowed(host) {
+	if !ValidHost(host) {
 		return nil, fmt.Errorf("refusing to sign for %q", host)
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
@@ -182,8 +206,7 @@ func (a *Authority) LeafFor(host string) (*tls.Certificate, error) {
 	return c, nil
 }
 
-// sign issues a leaf without the Allowed check (tests use it to prove the
-// name constraint itself works).
+// sign issues a leaf certificate for host.
 func (a *Authority) sign(host string) (*tls.Certificate, error) {
 	now := time.Now()
 	tmpl := &x509.Certificate{

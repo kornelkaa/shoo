@@ -78,13 +78,17 @@ func askSettings(cur Settings, trusted bool) (s Settings, ok bool, err error) {
 	s, ok = cur, true
 
 	certLine := "• macOS asks for your password once, to trust shoo's certificate.\n" +
-		"  It only works for youtube.com, so it can't be used to read other websites."
+		"  With it shoo decrypts websites on this Mac to remove ads and hide ad\n" +
+		"  boxes. Banks, logins, payments and Apple\n" +
+		"  services are never decrypted. The key never leaves your Mac."
 	if trusted {
-		certLine = "• The certificate is already trusted: no password needed for it."
+		certLine = "• The certificate is already trusted: no password needed for it\n" +
+			"  (unless it's an old YouTube-only one, which is replaced)."
 	}
 	perms := certLine + "\n" +
 		"• Terminal asks for your password (sudo) once, to point macOS's network\n" +
-		"  settings at shoo. Only YouTube and ad domains go through it.\n" +
+		"  settings at shoo: websites go through its proxy, and (if blocking other\n" +
+		"  websites) its DNS service answers ad domains with a dead address.\n" +
 		"• Running in the background needs no password."
 
 	form := huh.NewForm(

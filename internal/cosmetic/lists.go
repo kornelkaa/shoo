@@ -13,13 +13,22 @@ import (
 	"time"
 )
 
-// ListFile holds the downloaded hiding lists, inside shoo's data folder.
+// ListFile holds the downloaded filter lists, inside shoo's data folder.
+// Their element-hiding rules are used here, their network rules by
+// internal/netfilter.
 const ListFile = "cosmetic.txt"
 
-// Lists are the filter lists whose element-hiding rules are used.
+// Lists are the filter lists shoo downloads. They are fetched on this Mac,
+// not shipped with shoo.
 var Lists = []string{
 	// EasyList: the main ad list (GPLv3 / CC BY-SA 3.0).
 	"https://easylist.to/easylist/easylist.txt",
+	// EasyPrivacy: trackers and analytics (GPLv3 / CC BY-SA 3.0).
+	"https://easylist.to/easylist/easyprivacy.txt",
+	// uBlock Origin's own lists: fixes for ads the others miss, and
+	// privacy (GPLv3). Rules that need uBlock Origin's scripts are skipped.
+	"https://ublockorigin.github.io/uAssets/filters/filters.txt",
+	"https://ublockorigin.github.io/uAssets/filters/privacy.txt",
 	// Hufilter: Hungarian sites.
 	"https://raw.githubusercontent.com/hufilter/hufilter/gh-pages/hufilter.txt",
 }
@@ -67,6 +76,28 @@ func Update(ctx context.Context, dir string) (int, error) {
 	return r.Len(), os.Rename(tmp, filepath.Join(dir, ListFile))
 }
 
+// Current reports whether the saved file in dir has every list in Lists
+// (an update may add lists; then they're downloaded right away instead of
+// at the next weekly refresh).
+func Current(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, ListFile))
+	if err != nil {
+		return false
+	}
+	have := map[string]bool{}
+	for _, l := range strings.Split(string(b), "\n") {
+		if u, ok := strings.CutPrefix(l, "! Source: "); ok {
+			have[strings.TrimSpace(u)] = true
+		}
+	}
+	for _, u := range Lists {
+		if !have[u] {
+			return false
+		}
+	}
+	return true
+}
+
 func download(ctx context.Context, url string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -104,7 +135,7 @@ func AutoUpdate(ctx context.Context, dir string, maxAge time.Duration, logger *l
 		case <-timer.C:
 		}
 		fi, err := os.Stat(filepath.Join(dir, ListFile))
-		if err != nil || time.Since(fi.ModTime()) > maxAge {
+		if err != nil || time.Since(fi.ModTime()) > maxAge || !Current(dir) {
 			if n, err := Update(ctx, dir); err != nil {
 				logger.Printf("refreshing element-hiding lists failed (keeping the old ones): %v", err)
 			} else if r, err := Load(dir); err == nil {

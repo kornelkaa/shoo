@@ -5,11 +5,12 @@
 package cosmetic
 
 import (
-	"bufio"
 	"io"
 	"regexp"
 	"sort"
 	"strings"
+
+	"shoo/internal/filterlist"
 )
 
 // rule is one element-hiding rule.
@@ -46,13 +47,11 @@ func Parse(r io.Reader) (*Rules, error) {
 	exceptions := map[string][]string{} // "" = everywhere
 	noGeneric, noCosmetic := map[string]bool{}, map[string]bool{}
 
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || line[0] == '!' || line[0] == '[' {
-			continue
-		}
+	var lines []string
+	if err := filterlist.Scan(r, func(l string) { lines = append(lines, l) }); err != nil {
+		return nil, err
+	}
+	for _, line := range lines {
 		if m := genericHideRe.FindStringSubmatch(strings.ToLower(line)); m != nil {
 			for _, opt := range strings.Split(m[2], ",") {
 				switch opt {
@@ -79,9 +78,6 @@ func Parse(r io.Reader) (*Rules, error) {
 			continue
 		}
 		all = append(all, pending{sel, inc, exc})
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
 	}
 
 	everywhereExc := map[string]bool{}

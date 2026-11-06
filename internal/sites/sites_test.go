@@ -64,7 +64,7 @@ func TestBlocked(t *testing.T) {
 		"badcase.example.net":            true,
 		"example.net":                    false, // parent of a blocked domain is not blocked
 		"apple.com":                      false,
-		"ads.youtube.com":                false, // YouTube is never blocked
+		"ads.youtube.com":                true, // YouTube's ad host is blocked like any ad domain
 		"www.youtube.com":                false,
 		"r1---sn-abc.googlevideo.com":    false,
 		"youtubei.googleapis.com":        false,
@@ -313,5 +313,24 @@ func TestHandlerOnlyAnswersLocalNames(t *testing.T) {
 	}
 	if passed != 2 {
 		t.Errorf("%d foreign requests reached the proxy, want 2 (which refuses them)", passed)
+	}
+}
+
+func TestExempt(t *testing.T) {
+	l := NewList([]string{"ads.example", "ads.youtube.com", "youtube.com"}, []string{"needed.example"})
+	for host, want := range map[string]bool{
+		"www.youtube.com": true, "i.ytimg.com": true, "needed.example": true, "cdn.needed.example": true,
+		"ads.example": false, "news.example": false, "ads.youtube.com": false,
+	} {
+		if got := l.Exempt(host); got != want {
+			t.Errorf("Exempt(%q) = %v, want %v", host, got, want)
+		}
+	}
+	// YouTube's ad host is blocked when a list has it; YouTube itself never.
+	if !l.Blocked("ads.youtube.com") || l.Blocked("www.youtube.com") || l.Blocked("youtube.com") {
+		t.Error("only ads.youtube.com should be blocked")
+	}
+	if IsYouTube("ads.youtube.com") || !IsYouTube("m.youtube.com") {
+		t.Error("IsYouTube")
 	}
 }

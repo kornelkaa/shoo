@@ -9,11 +9,21 @@ decrypts the websites you visit, on your Mac, and cleans them up before Safari s
 
 - **Ad domains** ([StevenBlack](https://github.com/StevenBlack/hosts) +
   [HaGeZi Pro](https://github.com/hagezi/dns-blocklists), ~280k domains): the proxy answers
-  their requests itself with an empty response, so they never load.
+  their requests itself by closing the connection, so they never load and the page sees a
+  network error, as with a browser ad blocker (ad-block testers count that as blocked).
+- **Single ads and trackers** (URL rules from EasyList, EasyPrivacy, uBlock Origin's own
+  lists and Hufilter, ~108k rules): one ad script, image or tracking pixel is blocked on a
+  site that otherwise loads, e.g. `||example.com/ads/*$script,third-party` or
+  `.facebook.com/tr/$image`. Rules can be limited to request types, third-party requests
+  and pages (`$domain=`), with `@@` exceptions, `$important` and `$badfilter`. Pages
+  themselves are never blocked, and neither is YouTube (it has its own code; only its
+  ad host `ads.youtube.com` is blocked) or anything
+  you `shoo allow`. Rules that need uBlock Origin's scripts or features (`$redirect`,
+  `$removeparam`, `$csp`, ...) are skipped instead of half-applied.
 - **Ad boxes:** every page gets two stylesheets (served by the proxy from
   `assets.shoo.internal`) built from the element-hiding rules of
-  [EasyList](https://easylist.to) and [Hufilter](https://github.com/hufilter/hufilter)
-  (~25k rules), e.g. `dictionary.com##[id^="dco"]`. The page's Content-Security-Policy is
+  [EasyList](https://easylist.to), uBlock Origin's lists and
+  [Hufilter](https://github.com/hufilter/hufilter) (~26k rules), e.g. `dictionary.com##[id^="dco"]`. The page's Content-Security-Policy is
   adjusted so the stylesheets are allowed.
 - **YouTube:** the ad fields (`adPlacements`, `playerAds`, `adSlots`,
   `adBreakHeartbeatParams`) are removed from watch pages and API responses, and a backup
@@ -22,7 +32,7 @@ decrypts the websites you visit, on your Mac, and cleans them up before Safari s
   proxy and as a fallback if the proxy stops. Everything else goes to your network's DNS.
 
 ```
-most websites          → proxy: decrypted, ad requests blocked, ad boxes hidden
+most websites          → proxy: decrypted, ad domains and ad URLs blocked, ad boxes hidden
 YouTube                → proxy: same, plus ad fields removed
 never-decrypted sites  → direct (banks, logins, payments, Apple services, video streams)
 ad domains (any app)   → DNS answers 0.0.0.0
@@ -111,9 +121,9 @@ Logs: `~/Library/Logs/shoo.log` (`removed N ad fields` on YouTube, list refreshe
 a record of the sites you visit (`shoo status` shows the count; `shoo-debug` logs them).
 
 Limits: ads served from a site's own domain (Facebook, Instagram, Reddit sponsored posts)
-are only hidden where EasyList has a rule for them. Rules that need scripts (uBlock's
-scriptlets, `:has-text()` and other procedural filters) and EasyList's URL-pattern rules
-aren't supported yet. Never-decrypted sites aren't cleaned up. Apps
+are only hidden where the lists have a rule for them. Rules that need scripts (uBlock's
+scriptlets, `:has-text()` and other procedural filters) aren't supported, nor are URL rules
+that redirect or rewrite requests. Never-decrypted sites aren't cleaned up. Apps
 that use the system proxy settings also go through shoo. Browsers or apps with their own
 encrypted DNS (and iCloud Private Relay) skip the DNS part.
 
@@ -149,12 +159,17 @@ Downloads work for everyone once the repo is public.
 ## Layout
 
 - `internal/proxy` – the proxy: decrypts sites (except the never-decrypt list), answers
-  ad domains with 403, links the hiding stylesheets into pages, removes YouTube ad data
+  ad domains and ad URLs with a network error, links the hiding stylesheets into pages,
+  removes YouTube ad data
 - `internal/certs` – this Mac's certificate authority
 - `internal/prune` – which YouTube responses to edit and which keys to delete
 - `internal/ytskip` – backup for YouTube ads that get past the removal: a script in YouTube
   pages that, only while an ad is playing, mutes it, jumps to its end and presses Skip
-- `internal/cosmetic` – element-hiding rules (EasyList syntax) → CSS, CSP patching, page injection
+- `internal/cosmetic` – element-hiding rules (EasyList syntax) → CSS, CSP patching, page
+  injection; downloads the filter lists
+- `internal/netfilter` – URL rules (EasyList syntax): parsing, an index for fast lookups,
+  matching (shoo's own code, no uBlock Origin code)
+- `internal/filterlist` – reads list files, skipping `!#if` blocks
 - `internal/sites` – ad-domain list, never-decrypt list, PAC file
 - `internal/dnsblock` – the DNS server: 0.0.0.0 for blocked domains, everything else passed on.
   Runs as a system service (`/Library/LaunchDaemons/com.kornelkaa.shoo.dns.plist`) from a

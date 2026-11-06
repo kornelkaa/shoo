@@ -83,6 +83,13 @@ func (h *Handler) Blocked(host string) bool {
 	return true
 }
 
+// Exempt reports whether no URL of host may be blocked (YouTube, and
+// domains added with `shoo allow`).
+func (h *Handler) Exempt(host string) bool { return h.list.Load().Exempt(host) }
+
+// CountBlocked counts a request blocked some other way (by URL).
+func (h *Handler) CountBlocked() { h.blocked.Add(1) }
+
 // Decrypt reports whether the proxy may decrypt host.
 func (h *Handler) Decrypt(host string) bool { return h.list.Load().Decrypt(host) }
 

@@ -43,11 +43,14 @@ type Proxy struct {
 
 	// Decrypt reports whether HTTPS to host may be decrypted (nil: YouTube only).
 	Decrypt func(host string) bool
-	// Blocked reports whether host is an ad domain; its requests get an empty
-	// 403 from the proxy instead of reaching the site (nil: nothing blocked).
+	// Blocked reports whether host is an ad domain; its requests fail (see
+	// refuse) instead of reaching the site (nil: nothing blocked).
 	Blocked func(host string) bool
 	// Cosmetic hides ad elements in decrypted pages (nil: off).
 	Cosmetic *cosmetic.Engine
+	// Filter reports whether one request (to scheme://host) should be
+	// blocked by URL, e.g. a single ad script on a site (nil: off).
+	Filter func(r *http.Request, scheme, host string) bool
 
 	once  sync.Once
 	conns *connListener
@@ -234,9 +237,8 @@ func (p *Proxy) reverseProxy() http.Handler {
 			p.Cosmetic.ServeAsset(w, r)
 			return
 		}
-		if p.blocked(host) {
-			w.WriteHeader(http.StatusForbidden)
-			return
+		if p.blocked(host) || p.Filter != nil && p.Filter(r, "https", host) {
+			refuse()
 		}
 		rp.ServeHTTP(w, r)
 	})
@@ -342,7 +344,7 @@ func setBody(resp *http.Response, b []byte) {
 }
 
 // plainHTTP forwards http:// requests (e.g. http://youtube.com, which just
-// redirects to https). Ad domains get an empty 403.
+// redirects to https). Blocked requests fail (see refuse).
 func (p *Proxy) plainHTTP() http.Handler {
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
@@ -354,13 +356,21 @@ func (p *Proxy) plainHTTP() http.Handler {
 		ErrorLog:  p.Log,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if p.blocked(r.URL.Hostname()) {
-			w.WriteHeader(http.StatusForbidden)
-			return
+		if p.blocked(r.URL.Hostname()) || p.Filter != nil && p.Filter(r, "http", r.URL.Host) {
+			refuse()
 		}
 		rp.ServeHTTP(w, r)
 	})
 }
+
+// refuse ends a blocked request by closing the connection without an
+// answer, so the page sees a network error, as with a browser ad blocker.
+// (An empty 403 also stops the ad, but scripts that check whether a request
+// failed, like ad-block testers, see it as loaded.) It happens inside the
+// decrypted connection, which the browser already opened through shoo, so
+// macOS doesn't retry the request directly. The HTTP server recovers this
+// panic and closes the connection quietly.
+func refuse() { panic(http.ErrAbortHandler) }
 
 func tunnel(client net.Conn, target string) {
 	defer client.Close()

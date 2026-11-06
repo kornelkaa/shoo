@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"ytblock/internal/sites"
+	"shoo/internal/sites"
 )
 
 func TestStableBinary(t *testing.T) {

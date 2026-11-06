@@ -24,10 +24,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/proxy"
-	"ytblock/internal/prune"
-	"ytblock/internal/sites"
+	"shoo/internal/certs"
+	"shoo/internal/proxy"
+	"shoo/internal/prune"
+	"shoo/internal/sites"
 )
 
 // adMarkers are names YouTube uses for ad instructions. Finding one of these

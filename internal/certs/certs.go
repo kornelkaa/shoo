@@ -64,7 +64,7 @@ func Generate(dir string, force bool) error {
 	now := time.Now()
 	tmpl := &x509.Certificate{
 		SerialNumber:          randSerial(),
-		Subject:               pkix.Name{CommonName: "ytblock local CA (" + host + ")", Organization: []string{"ytblock"}},
+		Subject:               pkix.Name{CommonName: "shoo local CA (" + host + ")", Organization: []string{"shoo"}},
 		NotBefore:             now.Add(-time.Hour),
 		NotAfter:              now.AddDate(10, 0, 0),
 		IsCA:                  true,
@@ -132,7 +132,7 @@ type Authority struct {
 func Load(dir string) (*Authority, error) {
 	certPEM, err := os.ReadFile(filepath.Join(dir, CertFile))
 	if err != nil {
-		return nil, fmt.Errorf("reading CA (run `ytblock init-ca` first): %w", err)
+		return nil, fmt.Errorf("reading CA (run `shoo init-ca` first): %w", err)
 	}
 	keyPEM, err := os.ReadFile(filepath.Join(dir, KeyFile))
 	if err != nil {

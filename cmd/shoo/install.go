@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/sites"
+	"shoo/internal/certs"
+	"shoo/internal/sites"
 )
 
 const agentLabel = "com.kornelkaa.shoo"

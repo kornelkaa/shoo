@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/sites"
+	"shoo/internal/certs"
+	"shoo/internal/sites"
 )
 
 func loginKeychain() (string, error) {

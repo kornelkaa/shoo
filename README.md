@@ -1,8 +1,8 @@
 # shoo
 
 (Formerly called ytblock. `shoo setup` takes over an existing ytblock install: settings, lists
-and the trusted certificate carry over. The certificate keeps its name, "ytblock local CA", in
-Keychain Access.)
+and the trusted certificate carry over. A certificate created before the rename keeps its old
+name, "ytblock local CA", in Keychain Access; new ones are called "shoo local CA".)
 
 Blocks ads in Safari on macOS.
 

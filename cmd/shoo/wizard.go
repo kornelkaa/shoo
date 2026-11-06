@@ -12,7 +12,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
-	"ytblock/internal/sites"
+	"shoo/internal/sites"
 )
 
 const settingsFile = "settings.json"

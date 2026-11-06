@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"ytblock/internal/certs"
+	"shoo/internal/certs"
 )
 
 // File names inside the data directory.

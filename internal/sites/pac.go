@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"ytblock/internal/certs"
+	"shoo/internal/certs"
 )
 
 // PAC returns the proxy auto-config script for Safari / macOS:

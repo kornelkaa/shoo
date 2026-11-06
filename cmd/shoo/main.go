@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/proxy"
-	"ytblock/internal/prune"
-	"ytblock/internal/sites"
-	"ytblock/internal/ytskip"
+	"shoo/internal/certs"
+	"shoo/internal/proxy"
+	"shoo/internal/prune"
+	"shoo/internal/sites"
+	"shoo/internal/ytskip"
 )
 
 const defaultAddr = "127.0.0.1:8899"

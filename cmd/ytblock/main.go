@@ -17,8 +17,8 @@ import (
 
 	"ytblock/internal/certs"
 	"ytblock/internal/proxy"
+	"ytblock/internal/prune"
 	"ytblock/internal/sites"
-	"ytblock/internal/ytextra"
 )
 
 const defaultAddr = "127.0.0.1:8899"
@@ -154,7 +154,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		return err
 	}
 	logger := log.New(os.Stderr, "ytblock: ", log.LstdFlags)
-	p := proxy.New(ca, ytextra.Rules(), logger) // original YouTube rules + get_watch
+	p := proxy.New(ca, prune.Default, logger)
 	p.Addr = addr
 	// YouTube is handled by p, unchanged. Ad-domain blocking for other sites
 	// wraps it and only adds the combined PAC file and the refusals.

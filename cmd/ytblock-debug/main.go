@@ -73,7 +73,7 @@ func main() {
 	// YouTube is wrapped so responses can be recorded.
 	p := proxy.New(ca, ytextra.Rules(), events)
 	p.Addr = *addr
-	rec := &recorder{next: &ytextra.FeedCleaner{Next: p.Upstream, Log: events}, rules: ytextra.Rules(), log: events, dir: filepath.Join(outDir, "responses")}
+	rec := &recorder{next: p.Upstream, rules: ytextra.Rules(), log: events, dir: filepath.Join(outDir, "responses")}
 	p.Upstream = rec
 
 	list, err := sites.Load(dataDir)

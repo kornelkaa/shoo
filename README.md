@@ -177,4 +177,13 @@ and its `.sha256` as a GitHub release. `install.sh` always installs the latest r
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+shoo is free software under the [GNU GPL v3](LICENSE), with the additional terms in
+[NOTICE](NOTICE). In short:
+
+- You can use, study, change and share shoo.
+- If you share a changed version, you must publish its source under the same license.
+- You must keep the credit: "Based on shoo by kornelkaa".
+- A fork must use its own name. The name "shoo" and its logo are not licensed for
+  other projects.
+
+Versions released before this change remain available under the MIT license.

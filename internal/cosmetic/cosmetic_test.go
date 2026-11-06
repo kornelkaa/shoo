@@ -29,6 +29,10 @@ example.com#@#.shared-ad
 example.com#?#.extended:-abp-contains(ad)
 @@||nogeneric.net^$generichide
 @@||nocosmetic.net^$elemhide
+@@||www.search.*/search?$generichide
+@@||path.org/page/*$ghide
+www.search.*##.search-ad
+~search.co.uk,search.*##.entity-ad
 ||ads.example.com^
 `
 
@@ -52,13 +56,18 @@ func TestParse(t *testing.T) {
 		"quiet.org":        {".shared-ad"},
 		"nogeneric.net":    nil,
 		"nocosmetic.net":   nil,
+		"www.search.com":   {".entity-ad", ".search-ad"}, // no generic: exception has a path and "*"
+		"www.search.co.uk": {".search-ad"},               // ~search.co.uk
+		"search.com":       {".entity-ad", ".loud", ".shared-ad"},
+		"path.org":         nil,
 	}
 	for host, want := range cases {
 		if got := r.SiteSelectors(host); !slices.Equal(got, want) {
 			t.Errorf("SiteSelectors(%s) = %q, want %q", host, got, want)
 		}
 	}
-	if r.GenericOn("nogeneric.net") || r.GenericOn("x.nocosmetic.net") || !r.GenericOn("other.com") {
+	if r.GenericOn("nogeneric.net") || r.GenericOn("x.nocosmetic.net") || !r.GenericOn("other.com") ||
+		r.GenericOn("www.search.com") || r.GenericOn("www.search.co.uk") || !r.GenericOn("search.com") || r.GenericOn("path.org") {
 		t.Error("GenericOn wrong")
 	}
 }

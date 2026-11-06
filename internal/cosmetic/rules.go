@@ -34,7 +34,12 @@ type Rules struct {
 // Len is the number of hiding rules.
 func (r *Rules) Len() int { return r.count }
 
-var genericHideRe = regexp.MustCompile(`^@@\|\|([a-z0-9.-]+)\^?\$(.*)$`)
+// genericHideRe matches "@@||site^$generichide" exceptions. The site may be
+// an entity ("www.google.*") and may be followed by a path
+// ("@@||www.google.*/search?$generichide"). shoo decides per site, not per
+// page, so an exception for some pages applies to the whole site: that only
+// hides less there.
+var genericHideRe = regexp.MustCompile(`^@@\|\|([a-z0-9-]+(?:\.[a-z0-9-]+)*(?:\.\*)?)(?:[\^/][^$]*)?\$(.*)$`)
 
 // Parse reads EasyList-style lists. Only plain CSS element hiding is used;
 // network rules, scriptlets and extended/procedural selectors are skipped.
@@ -146,8 +151,8 @@ func parseDomains(s string) (include, exclude []string) {
 		}
 		neg := strings.HasPrefix(d, "~")
 		d = strings.TrimPrefix(d, "~")
-		if strings.HasSuffix(d, ".*") || strings.ContainsAny(d, "/*|") {
-			continue // entity ("google.*") and regex domains aren't supported
+		if strings.ContainsAny(strings.TrimSuffix(d, ".*"), "/*|") {
+			continue // regex domains aren't supported; entities ("google.*") are
 		}
 		if neg {
 			exclude = append(exclude, d)
@@ -229,19 +234,27 @@ func validSelector(sel string) bool {
 	return true
 }
 
-// suffixes returns host and its parent domains: a.b.c -> a.b.c, b.c, c.
+// suffixes returns host and its parent domains, plus each of them with its
+// ending replaced by "*" so entity rules match ("www.google.*" matches
+// www.google.com and www.google.co.uk):
+// a.b.c -> a.b.c, b.c, c, a.b.*, a.*, b.*.
 func suffixes(host string) []string {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	var out []string
+	var out, entities []string
 	for h := host; h != ""; {
 		out = append(out, h)
+		for j := len(h) - 1; j > 0; j-- {
+			if h[j] == '.' {
+				entities = append(entities, h[:j]+".*")
+			}
+		}
 		i := strings.IndexByte(h, '.')
 		if i < 0 {
 			break
 		}
 		h = h[i+1:]
 	}
-	return out
+	return append(out, entities...)
 }
 
 func matchesAny(host string, domains []string) bool {

@@ -155,6 +155,8 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	}
 	logger := log.New(os.Stderr, "ytblock: ", log.LstdFlags)
 	p := proxy.New(ca, ytextra.Rules(), logger) // original YouTube rules + get_watch
+	// Remove ad tiles from feeds before the YouTube proxy's own editing.
+	p.Upstream = &ytextra.FeedCleaner{Next: p.Upstream, Log: logger}
 	p.Addr = addr
 	// YouTube is handled by p, unchanged. Ad-domain blocking for other sites
 	// wraps it and only adds the combined PAC file and the refusals.

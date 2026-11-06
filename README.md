@@ -35,7 +35,7 @@ ad domains (any app)   → DNS answers 0.0.0.0
 ```
 
 - **Never decrypted** (`internal/sites/exclusions.txt`): logins
-  (Google, Apple, Microsoft), banks and payments (incl. Hungarian banks), password managers,
+  (Google, Apple, Microsoft), banks (worldwide) and payments, password managers,
   government sites, messaging, email and documents (Outlook, Google Docs/Drive), AWS sign-in,
   Apple services, YouTube's video stream. Add more with
   `shoo skip example.com`. If an app refuses shoo's certificate (some apps only trust their

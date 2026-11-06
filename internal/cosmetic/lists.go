@@ -29,7 +29,7 @@ var Lists = []string{
 	// privacy (GPLv3). Rules that need uBlock Origin's scripts are skipped.
 	"https://ublockorigin.github.io/uAssets/filters/filters.txt",
 	"https://ublockorigin.github.io/uAssets/filters/privacy.txt",
-	// Hufilter: Hungarian sites.
+	// Hufilter: a regional list covering sites the lists above miss.
 	"https://raw.githubusercontent.com/hufilter/hufilter/gh-pages/hufilter.txt",
 }
 

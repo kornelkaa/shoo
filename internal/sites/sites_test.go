@@ -87,7 +87,7 @@ func TestPACContents(t *testing.T) {
 		`return "PROXY 127.0.0.1:8899; DIRECT"`, // everything else: through shoo, direct if it's off
 		`"googlevideo.com":1`,                   // never decrypted
 		`"accounts.google.com":1`,
-		`"otpbank.hu":1`,
+		`"chase.com":1`,
 		`"mybank.example":1`,
 		`isPlainHostName(host)`,
 	} {
@@ -110,7 +110,7 @@ func TestDecrypt(t *testing.T) {
 		"accounts.google.com":         false,
 		"r1---sn-abc.googlevideo.com": false,
 		"login.mybank.example":        false,
-		"www.otpbank.hu":              false,
+		"secure.chase.com":            false,
 		"appleid.apple.com":           false,
 	} {
 		if got := l.Decrypt(host); got != want {

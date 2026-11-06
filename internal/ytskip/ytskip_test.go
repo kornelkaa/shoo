@@ -1,8 +1,10 @@
 package ytskip
 
 import (
+	"context"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,9 +41,17 @@ func TestTransportOnlyEditsPages(t *testing.T) {
 		io.WriteString(w, page)
 	}))
 	defer srv.Close()
-	tr := &Transport{Next: http.DefaultTransport, Log: log.New(io.Discard, "", 0)}
-	for path, edited := range map[string]bool{"/watch": true, "/youtubei/v1/player": false} {
-		req, _ := http.NewRequest("GET", srv.URL+path, nil)
+	// Every host goes to the test server.
+	next := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	}}
+	tr := &Transport{Next: next, Log: log.New(io.Discard, "", 0)}
+	for path, edited := range map[string]bool{
+		"http://www.youtube.com/watch":              true,
+		"http://www.youtube.com/youtubei/v1/player": false,
+		"http://www.dictionary.com/watch":           false, // not YouTube
+	} {
+		req, _ := http.NewRequest("GET", path, nil)
 		resp, err := tr.RoundTrip(req)
 		if err != nil {
 			t.Fatal(err)

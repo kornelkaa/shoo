@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"shoo/internal/certs"
+	"shoo/internal/cosmetic"
 	"shoo/internal/sites"
 )
 
@@ -131,7 +132,7 @@ func enable(pacURL string, force bool) error {
 		return err
 	}
 	for _, svc := range svcs {
-		if cur, on := autoProxy(svc); on && cur != pacURL && !force {
+		if cur, on := autoProxy(svc); on && !isShooPAC(cur, pacURL) && !force {
 			fmt.Printf("  %-24s skipped: already uses %s (use -force to replace)\n", svc, cur)
 			continue
 		}
@@ -156,7 +157,7 @@ func disable(pacURL string) error {
 		return err
 	}
 	for _, svc := range svcs {
-		if cur, on := autoProxy(svc); on && cur == pacURL {
+		if cur, on := autoProxy(svc); on && isShooPAC(cur, pacURL) {
 			if err := run("networksetup", "-setautoproxystate", svc, "off"); err != nil {
 				return fmt.Errorf("%s: %w", svc, err)
 			}
@@ -170,6 +171,8 @@ func status(dir, addr, pacURL string) {
 	fmt.Println("Certificate:")
 	if t, err := isTrusted(dir); err != nil {
 		fmt.Println("  missing:", err)
+	} else if t && caConstrained(dir) {
+		fmt.Println("  trusted, but YouTube only (run `shoo setup` to hide ads on other websites)")
 	} else if t {
 		fmt.Println("  trusted")
 	} else {
@@ -205,30 +208,55 @@ func status(dir, addr, pacURL string) {
 		fmt.Println("  no ad-domain list (run `shoo update-lists`)")
 	} else if l, err := sites.Load(dir); err == nil {
 		fmt.Printf("  %d ad domains, list updated %s\n", l.Len(), fi.ModTime().Format("2006-01-02 15:04"))
+		if r, err := cosmetic.Load(dir); err == nil && r.Len() > 0 {
+			fmt.Printf("  %d rules for hiding ad boxes\n", r.Len())
+		} else {
+			fmt.Println("  no element-hiding lists (run `shoo update-lists`)")
+		}
+		fmt.Printf("  %d sites never decrypted (banks, logins, Apple...; add with `shoo skip`)\n", len(sites.Exclusions()))
 	}
 	var st sites.Stats
 	if resp, err := c.Get("http://" + addr + "/stats"); err == nil {
 		if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil {
-			fmt.Printf("  %d requests blocked since the proxy started\n", st.Blocked)
+			fmt.Printf("  %d ad requests blocked by the proxy since it started\n", st.Blocked)
 		} else {
 			fmt.Println("  proxy is running YouTube-only (-sites=false)")
 		}
 		resp.Body.Close()
 	}
 
+	if set.Sites != sitesOff {
+		dnsStatus()
+	}
+
 	fmt.Println("Network services:")
 	svcs, _ := networkServices()
 	for _, svc := range svcs {
 		cur, on := autoProxy(svc)
+		var line string
 		switch {
 		case on && cur == pacURL:
-			fmt.Printf("  %-24s on\n", svc)
+			line = "on"
+		case on && isShooPAC(cur, pacURL):
+			line = "on, but an older PAC address (run `shoo setup`)"
 		case on:
-			fmt.Printf("  %-24s not shoo (another PAC file is on: %s)\n", svc, cur)
+			line = "not shoo (another PAC file is on: " + cur + ")"
 		default:
-			fmt.Printf("  %-24s off\n", svc)
+			line = "off"
 		}
+		if usesShooDNS(svc) {
+			line += ", DNS shoo"
+		} else if set.Sites != sitesOff {
+			line += ", DNS not shoo"
+		}
+		fmt.Printf("  %-24s %s\n", svc, line)
 	}
+}
+
+// isShooPAC reports whether url is shoo's PAC file, any version of it.
+func isShooPAC(url, pacURL string) bool {
+	base, _, _ := strings.Cut(pacURL, "?")
+	return url == base || strings.HasPrefix(url, base+"?")
 }
 
 func run(name string, args ...string) error {

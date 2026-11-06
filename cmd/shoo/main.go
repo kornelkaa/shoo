@@ -1,6 +1,9 @@
-// Command shoo removes ads in Safari on macOS. YouTube ads are removed by
-// editing YouTube's responses in a local proxy (internal/proxy); ads on other
-// sites are blocked by refusing known ad domains (internal/sites).
+// Command shoo removes ads in Safari on macOS. A
+// local proxy (internal/proxy) decrypts websites, removes YouTube's ad data,
+// answers requests to ad domains itself, and hides the boxes ads leave
+// behind with EasyList's element-hiding rules (internal/cosmetic). A local
+// DNS server (internal/dnsblock) also blocks ad domains for everything that
+// doesn't go through the proxy.
 package main
 
 import (
@@ -18,6 +21,7 @@ import (
 	"time"
 
 	"shoo/internal/certs"
+	"shoo/internal/cosmetic"
 	"shoo/internal/proxy"
 	"shoo/internal/prune"
 	"shoo/internal/sites"
@@ -25,6 +29,11 @@ import (
 )
 
 const defaultAddr = "127.0.0.1:8899"
+
+// pacVersion is part of the PAC file's address. macOS keeps using a PAC
+// file it already downloaded until its address changes, so this goes up
+// whenever the PAC file's routing changes (2: every site through the proxy).
+const pacVersion = "2"
 
 // version is set at build time: -ldflags "-X main.version=0.1.0".
 var version = "dev"
@@ -40,6 +49,8 @@ Usage:
 
   shoo block DOMAIN         always block a domain on other websites
   shoo allow DOMAIN         never block a domain (if a site breaks)
+  shoo skip DOMAIN          never decrypt a site: no ad hiding there, nothing
+                               changed (if a site or app breaks)
   shoo update-lists [-level strict|balanced|max]
                                download ad-domain lists now (also refreshed weekly)
                                (strict = default; balanced if sites break; max = most blocking)
@@ -49,8 +60,12 @@ Individual steps (setup does these for you):
   shoo init-ca [-force]     create this Mac's YouTube-only certificate
   shoo trust                trust the certificate (asks for your password)
   shoo run [-sites=false]   start the proxy (-sites=false: YouTube only)
-  sudo shoo enable [-force] turn shoo on in macOS network settings
-  sudo shoo disable         turn shoo off in macOS network settings
+  sudo shoo enable [-force] [-dns -data DIR]
+                            turn shoo on in macOS network settings
+                               (-dns: also install the ad-blocking DNS service
+                               for the shoo folder DIR and use it as DNS)
+  sudo shoo disable         turn shoo off in macOS network settings (also DNS)
+  sudo shoo disable-dns     only remove the DNS service and restore DNS
   shoo untrust              remove the certificate from the keychain
 
 All commands accept -addr (default ` + defaultAddr + `).
@@ -70,15 +85,21 @@ func main() {
 	listURLs := fs.String("url", "", "update-lists: comma-separated list URLs (instead of -level)")
 	purge := fs.Bool("purge", false, "uninstall: also delete settings, lists and the log")
 	yes := fs.Bool("yes", false, "setup: don't ask questions")
+	dnsOn := fs.Bool("dns", false, "enable: also turn on the ad-blocking DNS service")
+	dataFlag := fs.String("data", "", "enable -dns, dns: shoo's data folder")
 	fs.Parse(os.Args[2:])
 	if err := requireLoopback(*addr); err != nil {
 		log.Fatal(err)
 	}
-	pacURL := "http://" + *addr + "/proxy.pac"
+	pacURL := "http://" + *addr + "/proxy.pac?v=" + pacVersion
 
-	dir, err := dataDir()
-	if err != nil {
-		log.Fatal(err)
+	// The DNS system service runs without $HOME, so -data comes first.
+	dir := *dataFlag
+	var err error
+	if dir == "" {
+		if dir, err = dataDir(); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	switch cmd {
@@ -96,7 +117,7 @@ func main() {
 	case "stop":
 		exec.Command("launchctl", "bootout", guiDomain()+"/"+agentLabel).Run()
 		fmt.Println("shoo is stopped until `shoo start` (or your next login, if it starts at login).")
-		fmt.Println("Safari connects directly meanwhile: YouTube shows ads, other sites aren't blocked.")
+		fmt.Println("Meanwhile YouTube shows ads. Ad domains on other sites stay blocked (DNS keeps running).")
 	case "uninstall":
 		err = uninstall(dir, *addr, pacURL, *purge)
 	case "version", "-version", "--version":
@@ -118,8 +139,21 @@ func main() {
 		}
 	case "enable":
 		err = enable(pacURL, *force)
+		if err == nil && *dnsOn {
+			var exe string
+			if exe, err = os.Executable(); err == nil {
+				err = enableDNS(exe, dir)
+			}
+		}
 	case "disable":
 		err = disable(pacURL)
+		if dnsErr := disableDNS(); err == nil {
+			err = dnsErr
+		}
+	case "disable-dns":
+		err = disableDNS()
+	case "dns":
+		err = runDNS(dir)
 	case "status":
 		status(dir, *addr, pacURL)
 	case "update-lists":
@@ -133,9 +167,13 @@ func main() {
 		var n int
 		n, err = sites.Update(context.Background(), dir, urls)
 		if err == nil {
-			fmt.Printf("Saved %d ad domains. A running proxy picks them up within a minute.\n", n)
+			fmt.Printf("Saved %d ad domains.\n", n)
+			n, err = cosmetic.Update(context.Background(), dir)
 		}
-	case "block", "allow":
+		if err == nil {
+			fmt.Printf("Saved %d element-hiding rules. A running proxy picks them up within a minute.\n", n)
+		}
+	case "block", "allow", "skip":
 		err = addDomain(dir, cmd, fs.Arg(0))
 	case "run":
 		err = runProxy(dir, *addr, *sitesOn)
@@ -157,8 +195,11 @@ func addDomain(dir, cmd, arg string) error {
 		return fmt.Errorf("%s is part of YouTube, which is handled separately and never blocked", d)
 	}
 	file := sites.BlockFile
-	if cmd == "allow" {
+	switch cmd {
+	case "allow":
 		file = sites.AllowFile
+	case "skip":
+		file = sites.SkipFile
 	}
 	if err := sites.AddDomain(dir, file, d); err != nil {
 		return err
@@ -175,13 +216,16 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	logger := log.New(os.Stderr, "shoo: ", log.LstdFlags)
 	p := proxy.New(ca, prune.Default, logger)
 	p.Addr = addr
-	// Next to p: a backup script in YouTube pages that mutes and skips an ad
-	// only if one still plays.
+	// A backup script in YouTube pages that mutes and skips an ad only if
+	// one still plays.
 	p.Upstream = &ytskip.Transport{Next: p.Upstream, Log: logger}
-	// YouTube is handled by p, unchanged. Ad-domain blocking for other sites
-	// wraps it and only adds the combined PAC file and the refusals.
+	// Without -sites only YouTube is decrypted (and only YouTube goes
+	// through the proxy, see proxy.PAC).
 	var handler http.Handler = p
 	if sitesOn {
+		if certs.Constrained(ca.Cert) {
+			logger.Printf("the certificate only works for YouTube: run `shoo setup` to block ads and hide ad boxes on other websites")
+		}
 		list, err := sites.Load(dir)
 		if err != nil {
 			return err
@@ -189,11 +233,32 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		if list.Len() == 0 {
 			logger.Printf("no ad-domain list yet: run `shoo update-lists` (YouTube blocking works without it)")
 		}
+		rules, err := cosmetic.Load(dir)
+		if err != nil {
+			return err
+		}
 		h := sites.NewHandler(p, addr, list, logger)
+		if !certs.Constrained(ca.Cert) {
+			p.Decrypt = h.Decrypt
+			p.Cosmetic = cosmetic.NewEngine(rules)
+		}
+		p.Blocked = h.Blocked
 		go h.Watch(dir, 30*time.Second)
 		go sites.AutoUpdate(context.Background(), dir, 7*24*time.Hour, logger)
+		if p.Cosmetic != nil {
+			reload := func(r *cosmetic.Rules) {
+				p.Cosmetic.SetRules(r)
+				logger.Printf("element-hiding rules loaded: %d", r.Len())
+			}
+			go watchFile(filepath.Join(dir, cosmetic.ListFile), 30*time.Second, func() {
+				if r, err := cosmetic.Load(dir); err == nil {
+					reload(r)
+				}
+			})
+			go cosmetic.AutoUpdate(context.Background(), dir, 7*24*time.Hour, logger, reload)
+		}
 		handler = h
-		logger.Printf("blocking %d ad domains on other websites", list.Len())
+		logger.Printf("blocking %d ad domains, hiding ad boxes with %d rules", list.Len(), rules.Len())
 	}
 	srv := &http.Server{
 		Addr:              addr,
@@ -203,6 +268,24 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	}
 	logger.Printf("shoo %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
+}
+
+// watchFile calls changed when the file at path changes.
+func watchFile(path string, every time.Duration, changed func()) {
+	state := func() string {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return "-"
+		}
+		return fmt.Sprint(fi.ModTime().UnixNano(), fi.Size())
+	}
+	last := state()
+	for range time.Tick(every) {
+		if cur := state(); cur != last {
+			last = cur
+			changed()
+		}
+	}
 }
 
 // dataDir is ~/Library/Application Support/shoo. Under sudo it is only used

@@ -19,8 +19,15 @@ import (
 	"time"
 
 	"shoo/internal/certs"
+	"shoo/internal/cosmetic"
 	"shoo/internal/sites"
 )
+
+// caConstrained reports whether the saved CA only works for YouTube.
+func caConstrained(dir string) bool {
+	ca, err := certs.Load(dir)
+	return err == nil && certs.Constrained(ca.Cert)
+}
 
 const agentLabel = "com.kornelkaa.shoo"
 
@@ -176,12 +183,26 @@ func setup(dir, addr, pacURL string, yes bool) error {
 	n := 0
 	step := func(msg string) { n++; fmt.Printf("\n[%d/5] %s\n", n, msg) }
 
-	step("YouTube-only certificate")
-	if _, err := os.Stat(filepath.Join(dir, certs.CertFile)); err == nil {
+	step("shoo's certificate")
+	_, statCA := os.Stat(filepath.Join(dir, certs.CertFile))
+	switch {
+	case statCA == nil && s.Sites != sitesOff && caConstrained(dir):
+		// Made by an older shoo, for YouTube only: hiding ads on other
+		// websites needs one that works for them too.
+		fmt.Println("  replacing the YouTube-only certificate with one for all websites")
+		if err := untrust(dir); err != nil {
+			return fmt.Errorf("removing the old certificate: %w", err)
+		}
+		if err := certs.Generate(dir, true); err != nil {
+			return err
+		}
+		fmt.Println("  created")
+	case statCA == nil:
 		fmt.Println("  already created")
-	} else if err := certs.Generate(dir, false); err != nil {
-		return err
-	} else {
+	default:
+		if err := certs.Generate(dir, false); err != nil {
+			return err
+		}
 		fmt.Println("  created")
 	}
 
@@ -214,6 +235,14 @@ func setup(dir, addr, pacURL string, yes bool) error {
 			fmt.Printf("  %d ad domains\n", n)
 		}
 	}
+	if _, err := os.Stat(filepath.Join(dir, cosmetic.ListFile)); s.Sites != sitesOff && err != nil {
+		fmt.Println("  downloading element-hiding lists (EasyList, Hufilter)...")
+		if n, err := cosmetic.Update(context.Background(), dir); err != nil {
+			fmt.Printf("  could not download (%v); the background service will retry\n", err)
+		} else {
+			fmt.Printf("  %d rules for hiding ad boxes\n", n)
+		}
+	}
 
 	if s.StartAtLogin {
 		step("Background service (starts at login)")
@@ -224,15 +253,30 @@ func setup(dir, addr, pacURL string, yes bool) error {
 		return err
 	}
 
-	step("Send YouTube and ad domains through shoo")
-	if enabledEverywhere(pacURL) {
+	wantDNS := s.Sites != sitesOff
+	if wantDNS {
+		step("Point macOS at shoo (YouTube via the proxy, ad domains via DNS)")
+	} else {
+		step("Point macOS at shoo (YouTube via the proxy)")
+	}
+	needPAC := !enabledEverywhere(pacURL)
+	needDNSOn := wantDNS && !(dnsInstalledFrom(exe) && dnsEverywhere() && dnsAnswers())
+	needDNSOff := !wantDNS && fileExists(dnsPlistPath)
+	if !needPAC && !needDNSOn && !needDNSOff {
 		fmt.Println("  already on")
 	} else {
 		fmt.Println("  changing network settings needs your password (sudo)")
-		sudo := exec.Command("sudo", exe, "enable", "-addr", addr)
-		sudo.Stdin, sudo.Stdout, sudo.Stderr = os.Stdin, os.Stdout, os.Stderr
-		if err := sudo.Run(); err != nil {
-			return fmt.Errorf("turning on the network setting: %w", err)
+		args := []string{exe, "enable", "-addr", addr}
+		if wantDNS {
+			args = append(args, "-dns", "-data", dir)
+		}
+		if err := sudoRun(args...); err != nil {
+			return fmt.Errorf("turning on the network settings: %w", err)
+		}
+		if needDNSOff {
+			if err := sudoRun(exe, "disable-dns"); err != nil {
+				return fmt.Errorf("removing the DNS service: %w", err)
+			}
 		}
 	}
 
@@ -318,7 +362,7 @@ func uninstall(dir, addr, pacURL string, purge bool) error {
 		}
 	}
 
-	fmt.Println("Turning off the network setting (needs your password)...")
+	fmt.Println("Turning off the network settings and DNS service (needs your password)...")
 	sudo := exec.Command("sudo", exe, "disable", "-addr", addr)
 	sudo.Stdin, sudo.Stdout, sudo.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := sudo.Run(); err != nil {
@@ -350,6 +394,12 @@ func uninstall(dir, addr, pacURL string, purge bool) error {
 		fmt.Printf("Your settings and lists are kept in %s (use -purge to delete them).\n", dir)
 	}
 	return nil
+}
+
+func sudoRun(args ...string) error {
+	sudo := exec.Command("sudo", args...)
+	sudo.Stdin, sudo.Stdout, sudo.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return sudo.Run()
 }
 
 // startAgent starts the background service now (it must be installed).

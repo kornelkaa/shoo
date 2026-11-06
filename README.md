@@ -4,30 +4,41 @@
 and the trusted certificate carry over. A certificate created before the rename keeps its old
 name, "ytblock local CA", in Keychain Access; new ones are called "shoo local CA".)
 
-Blocks ads in Safari on macOS.
+Blocks ads in Safari on macOS, and hides the empty boxes they leave behind. A local proxy
+decrypts the websites you visit, on your Mac, and cleans them up before Safari shows them.
 
-- **YouTube:** a small local proxy removes the ad fields (`adPlacements`,
-  `playerAds`, `adSlots`, `adBreakHeartbeatParams`) from YouTube's watch pages
-  and API responses before Safari sees them.
-- **Other websites:** connections to known ad and tracker domains are refused
-  ([StevenBlack](https://github.com/StevenBlack/hosts) + [HaGeZi Pro](https://github.com/hagezi/dns-blocklists),
-  ~280k domains). Nothing is decrypted for these sites.
-
-The two parts are separate. YouTube always goes to the YouTube code, and YouTube
-domains can never be blocked by the ad-domain list.
+- **Ad domains** ([StevenBlack](https://github.com/StevenBlack/hosts) +
+  [HaGeZi Pro](https://github.com/hagezi/dns-blocklists), ~280k domains): the proxy answers
+  their requests itself with an empty response, so they never load.
+- **Ad boxes:** every page gets two stylesheets (served by the proxy from
+  `assets.shoo.internal`) built from the element-hiding rules of
+  [EasyList](https://easylist.to) and [Hufilter](https://github.com/hufilter/hufilter)
+  (~25k rules), e.g. `dictionary.com##[id^="dco"]`. The page's Content-Security-Policy is
+  adjusted so the stylesheets are allowed.
+- **YouTube:** the ad fields (`adPlacements`, `playerAds`, `adSlots`,
+  `adBreakHeartbeatParams`) are removed from watch pages and API responses, and a backup
+  script skips an ad that still plays.
+- **DNS:** a small DNS server answers ad domains with 0.0.0.0, for apps that don't use the
+  proxy and as a fallback if the proxy stops. Everything else goes to your network's DNS.
 
 ```
-YouTube            → YouTube proxy (removes ad fields)   internal/proxy, prune, certs
-known ad domain    → refused                              internal/sites
-everything else    → direct, never touches shoo
+most websites          → proxy: decrypted, ad requests blocked, ad boxes hidden
+YouTube                → proxy: same, plus ad fields removed
+never-decrypted sites  → direct (banks, logins, payments, Apple services, video streams)
+ad domains (any app)   → DNS answers 0.0.0.0
 ```
 
-- Only YouTube and ad domains go through the proxy (via a PAC file). Everything else connects directly.
-- The video stream (`*.googlevideo.com`) is never touched.
-- The certificate is made on your Mac and macOS only accepts it for
-  `youtube.com` and `youtubei.googleapis.com`, so it can't be used against other sites.
-- If the proxy stops, Safari falls back to connecting directly: websites and YouTube keep
-  working, YouTube with ads. Ad domains stay blocked.
+- **Never decrypted** (`internal/sites/exclusions.txt`): logins
+  (Google, Apple, Microsoft), banks and payments (incl. Hungarian banks), password managers,
+  government sites, messaging, Apple services, YouTube's video stream. Add more with
+  `shoo skip example.com`. If an app refuses shoo's certificate (some apps only trust their
+  own), shoo stops decrypting that site automatically.
+- **The certificate** is made on your Mac when you run setup, and its private key is
+  readable only by your user. It works for any website: anyone who stole that key
+  file could impersonate websites to this Mac. It can't sign for IP addresses.
+  (Older versions made a YouTube-only certificate; `shoo setup` replaces it.)
+- If the proxy stops, Safari connects directly: websites keep working, with ad boxes, and
+  ad domains stay blocked by DNS.
 
 ## Install
 
@@ -58,10 +69,12 @@ go build -o shoo ./cmd/shoo
 Your answers are saved, so running `setup` again starts from them (`setup -yes` skips the
 questions). Then it:
 
-1. creates this Mac's YouTube-only certificate and trusts it (macOS password window)
-2. downloads the ad-domain lists (refreshed automatically every week)
+1. creates this Mac's certificate and trusts it (macOS password window)
+2. downloads the ad-domain and element-hiding lists (refreshed automatically every week)
 3. installs the background service
-4. points macOS at the PAC file (sudo password in Terminal)
+4. points macOS at the PAC file and, if blocking other websites, installs the DNS service
+   and sets it as your DNS (sudo password in Terminal). Your previous DNS settings are
+   saved and put back by `shoo uninstall`.
 
 Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
 
@@ -72,6 +85,7 @@ shoo status                      # is everything on?
 shoo setup                       # change your choices
 shoo start / shoo stop        # start or stop the background service
 shoo allow example.com           # a site broke: never block it
+shoo skip example.com            # a site or app broke: never decrypt it
 shoo block ads.example.com       # block something extra
 shoo update-lists -level balanced   # fewer blocked domains if sites break (strict = default, max = most)
 ```
@@ -85,11 +99,15 @@ Blocking levels, scored on the
 | `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
 | `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
-Log: `~/Library/Logs/shoo.log` (`blocked <domain>` for other sites, `removed N ad fields` on YouTube).
+Logs: `~/Library/Logs/shoo.log` (`blocked <domain>`, `removed N ad fields` on YouTube) and
+`/Library/Logs/shoo-dns.log` (`dns blocked <domain>`).
 
-Limits on other websites: empty ad boxes can remain, and ads served from a site's own
-domain (Facebook, Instagram, Reddit sponsored posts) aren't blocked. Other Mac apps
-that use the system proxy settings also get ad domains blocked.
+Limits: ads served from a site's own domain (Facebook, Instagram, Reddit sponsored posts)
+are only hidden where EasyList has a rule for them. Rules that need scripts (uBlock's
+scriptlets, `:has-text()` and other procedural filters) and EasyList's URL-pattern rules
+aren't supported yet. Never-decrypted sites aren't cleaned up. Apps
+that use the system proxy settings also go through shoo. Browsers or apps with their own
+encrypted DNS (and iCloud Private Relay) skip the DNS part.
 
 ## When an ad gets through
 
@@ -122,17 +140,18 @@ Downloads work for everyone once the repo is public.
 
 ## Layout
 
-YouTube (frozen; `scripts/check-youtube-untouched.sh` checks it matches `main`):
-- `internal/prune` – which responses to edit and which keys to delete
-- `internal/certs` – per-machine CA with a name constraint
-- `internal/proxy` – CONNECT proxy; decrypts YouTube only
-
-Next to the YouTube code:
-- `internal/ytskip` – backup for ads that get past the removal: a script in YouTube pages that,
-  only while an ad is playing, mutes it, jumps to its end and presses Skip (wraps `proxy.Proxy.Upstream`)
-
-Other websites:
-- `internal/sites` – ad-domain list, combined PAC file, refusing blocked domains
+- `internal/proxy` – the proxy: decrypts sites (except the never-decrypt list), answers
+  ad domains with 403, links the hiding stylesheets into pages, removes YouTube ad data
+- `internal/certs` – this Mac's certificate authority
+- `internal/prune` – which YouTube responses to edit and which keys to delete
+- `internal/ytskip` – backup for YouTube ads that get past the removal: a script in YouTube
+  pages that, only while an ad is playing, mutes it, jumps to its end and presses Skip
+- `internal/cosmetic` – element-hiding rules (EasyList syntax) → CSS, CSP patching, page injection
+- `internal/sites` – ad-domain list, never-decrypt list, PAC file
+- `internal/dnsblock` – the DNS server: 0.0.0.0 for blocked domains, everything else passed on.
+  Runs as a system service (`/Library/LaunchDaemons/com.kornelkaa.shoo.dns.plist`) from a
+  root-owned copy of shoo in `/Library/Application Support/shoo`; it opens port 53 and then
+  switches to your user
 
 - `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
 - `install.sh` – the curl installer; `scripts/release.sh` – publishes a release

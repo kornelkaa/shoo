@@ -1,12 +1,14 @@
-// Package sites blocks ads on websites other than YouTube by refusing
-// connections to known ad and tracker domains. Nothing is decrypted.
+// Package sites decides what the proxy does with each website: which ad and
+// tracker domains are blocked, and which sites are never decrypted (logins,
+// banks, Apple services, ...). It also makes the PAC file that sends
+// browsers through the proxy.
 //
-// YouTube is handled entirely by the existing YouTube code (internal/proxy);
-// this package never blocks or changes YouTube traffic.
+// YouTube's own domains are never blocked.
 package sites
 
 import (
 	"bufio"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +25,17 @@ const (
 	BlocklistFile = "blocklist.txt" // downloaded list (update-lists)
 	BlockFile     = "block.txt"     // domains the user added
 	AllowFile     = "allow.txt"     // domains the user never wants blocked
+	SkipFile      = "skip.txt"      // domains the user never wants decrypted
 )
+
+//go:embed exclusions.txt
+var exclusionsTxt string
+
+// Exclusions are the built-in sites that are never decrypted.
+func Exclusions() []string {
+	d, _ := ParseHosts(strings.NewReader(exclusionsTxt))
+	return d
+}
 
 // protected domains are never blocked, so YouTube keeps working exactly as
 // the YouTube code expects: the site, its API, video stream, and images.
@@ -46,12 +58,13 @@ type List struct {
 	blocked map[string]struct{}
 	allowed map[string]struct{}
 	prot    map[string]struct{}
+	skip    map[string]struct{} // never decrypted
 }
 
 // NewList builds a list. Blocking a domain also blocks its subdomains;
 // allowed and YouTube domains always win.
 func NewList(blocked, allowed []string) *List {
-	l := &List{blocked: map[string]struct{}{}, allowed: map[string]struct{}{}, prot: toSet(protected)}
+	l := &List{blocked: map[string]struct{}{}, allowed: map[string]struct{}{}, prot: toSet(protected), skip: toSet(Exclusions())}
 	for _, d := range blocked {
 		if d = normalize(d); validDomain(d) {
 			l.blocked[d] = struct{}{}
@@ -74,28 +87,25 @@ func (l *List) Blocked(host string) bool {
 	return inSuffixSet(l.blocked, host)
 }
 
+// Decrypt reports whether the proxy may decrypt host (to block ads in it and
+// hide ad boxes), i.e. it isn't on the never-decrypt list.
+func (l *List) Decrypt(host string) bool {
+	return !inSuffixSet(l.skip, normalize(host))
+}
+
+// AddSkip adds domains that are never decrypted.
+func (l *List) AddSkip(domains []string) {
+	for _, d := range domains {
+		if d = normalize(d); validDomain(d) {
+			l.skip[d] = struct{}{}
+		}
+	}
+}
+
 // Len is the number of blocked entries.
 func (l *List) Len() int { return len(l.blocked) }
 
-// Blocked domains for the PAC file: sorted, without entries already covered
-// by a blocked parent domain, and without YouTube domains.
-func (l *List) pacBlocked() []string {
-	var out []string
-	for d := range l.blocked {
-		if inSuffixSet(l.prot, d) {
-			continue
-		}
-		if i := strings.IndexByte(d, '.'); i >= 0 && inSuffixSet(l.blocked, d[i+1:]) {
-			continue // parent already blocked
-		}
-		out = append(out, d)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func (l *List) pacAllowed() []string   { return sortedKeys(l.allowed) }
-func (l *List) pacProtected() []string { return sortedKeys(l.prot) }
+func (l *List) pacSkip() []string { return sortedKeys(l.skip) }
 
 // Load reads the downloaded list and the user's block/allow files from dir.
 // Missing files are treated as empty.
@@ -112,7 +122,13 @@ func Load(dir string) (*List, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewList(blocked, allowed), nil
+	skip, err := readDomainsFile(filepath.Join(dir, SkipFile))
+	if err != nil {
+		return nil, err
+	}
+	l := NewList(blocked, allowed)
+	l.AddSkip(skip)
+	return l, nil
 }
 
 func readDomainsFile(path string) ([]string, error) {

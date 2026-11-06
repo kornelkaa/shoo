@@ -91,3 +91,40 @@ func TestSettings(t *testing.T) {
 }
 
 func sitesLevel(name string) []string { return sites.Levels[name] }
+
+func TestDNSPlist(t *testing.T) {
+	p := dnsPlist("/Users/me/Library/Application Support/shoo")
+	for _, want := range []string{
+		"<string>com.kornelkaa.shoo.dns</string>",
+		"<string>/Library/Application Support/shoo/shoo</string>\n\t\t<string>dns</string>",
+		"<string>/Users/me/Library/Application Support/shoo</string>",
+		"<key>KeepAlive</key>\n\t<true/>",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("plist missing %q\n%s", want, p)
+		}
+	}
+	if _, err := exec.LookPath("plutil"); err == nil {
+		f := filepath.Join(t.TempDir(), "dns.plist")
+		os.WriteFile(f, []byte(p), 0o644)
+		if out, err := exec.Command("plutil", "-lint", f).CombinedOutput(); err != nil {
+			t.Errorf("plutil: %s", out)
+		}
+	}
+}
+
+func TestIsShooPAC(t *testing.T) {
+	cur := "http://127.0.0.1:8899/proxy.pac?v=2"
+	for url, want := range map[string]bool{
+		"http://127.0.0.1:8899/proxy.pac":     true, // older shoo
+		"http://127.0.0.1:8899/proxy.pac?v=1": true,
+		cur:                                   true,
+		"http://127.0.0.1:8899/proxy.pacx":    false,
+		"http://127.0.0.1:9999/proxy.pac":     false,
+		"http://corp.example/wpad.dat":        false,
+	} {
+		if got := isShooPAC(url, cur); got != want {
+			t.Errorf("isShooPAC(%q) = %v, want %v", url, got, want)
+		}
+	}
+}

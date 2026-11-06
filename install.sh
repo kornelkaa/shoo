@@ -4,8 +4,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/kornelkaa/shoo/main/install.sh | sh
 #
 # It downloads the latest release from GitHub, checks its SHA-256 checksum,
-# puts the `shoo` command in /usr/local/bin (asks for your password if that
-# folder needs it), and runs `shoo setup`, which asks a few questions.
+# puts the `shoo` command in /usr/local/bin, owned by root (asks for your
+# password), and runs `shoo setup`, which asks a few questions.
 # Run the same command again to update.
 set -eu
 
@@ -36,14 +36,11 @@ tar -xzf "$tmp/$ASSET" -C "$tmp"
 chmod 755 "$tmp/shoo"
 "$tmp/shoo" version >/dev/null || fail "the downloaded shoo doesn't run on this Mac."
 
-say "Installing to $BIN_DIR/shoo..."
-if mkdir -p "$BIN_DIR" 2>/dev/null && [ -w "$BIN_DIR" ]; then
-  mv -f "$tmp/shoo" "$BIN_DIR/shoo"
-else
-  say "(needs your password to write to $BIN_DIR)"
-  sudo mkdir -p "$BIN_DIR"
-  sudo mv -f "$tmp/shoo" "$BIN_DIR/shoo"
-fi
+# shoo setup runs this file with sudo, so it belongs to root: nothing running
+# as you can swap it for something else before then.
+say "Installing to $BIN_DIR/shoo (needs your password)..."
+sudo mkdir -p "$BIN_DIR"
+sudo install -o root -g wheel -m 755 "$tmp/shoo" "$BIN_DIR/shoo"
 say "Installed $("$BIN_DIR/shoo" version)."
 
 if [ "${SHOO_NO_SETUP:-}" = 1 ]; then

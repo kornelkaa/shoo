@@ -30,13 +30,19 @@ ad domains (any app)   → DNS answers 0.0.0.0
 
 - **Never decrypted** (`internal/sites/exclusions.txt`): logins
   (Google, Apple, Microsoft), banks and payments (incl. Hungarian banks), password managers,
-  government sites, messaging, Apple services, YouTube's video stream. Add more with
+  government sites, messaging, email and documents (Outlook, Google Docs/Drive), AWS sign-in,
+  Apple services, YouTube's video stream. Add more with
   `shoo skip example.com`. If an app refuses shoo's certificate (some apps only trust their
   own), shoo stops decrypting that site automatically.
 - **The certificate** is made on your Mac when you run setup, and its private key is
-  readable only by your user. It works for any website: anyone who stole that key
-  file could impersonate websites to this Mac. It can't sign for IP addresses.
-  (Older versions made a YouTube-only certificate; `shoo setup` replaces it.)
+  readable only by your user. It works for most websites: anyone who stole that key
+  file could impersonate them to this Mac. It can't sign for IP addresses or for the
+  never-decrypted sites (they're written into the certificate as excluded names, which
+  macOS enforces), so a stolen key can't fake your bank or password manager. It lasts two
+  years; `shoo status` shows the date, and `shoo setup` replaces it in its last month (one
+  password prompt). Two days before it expires the proxy stops decrypting, so websites keep
+  working. (`shoo setup` also replaces certificates from older versions: YouTube-only ones,
+  and ones without the excluded names.)
 - If the proxy stops, Safari connects directly: websites keep working, with ad boxes, and
   ad domains stay blocked by DNS.
 
@@ -49,8 +55,9 @@ curl -fsSL https://raw.githubusercontent.com/kornelkaa/shoo/main/install.sh | sh
 ```
 
 This downloads the latest release (one file for Apple Silicon and Intel Macs), checks its
-SHA-256 checksum, puts `shoo` in `/usr/local/bin` (asks for your password if needed) and starts
-`shoo setup`. To read the script first: download [install.sh](install.sh), look at it, then run
+SHA-256 checksum, puts `shoo` in `/usr/local/bin` owned by root (asks for your password; setup
+later runs this file with sudo, so nothing running as you should be able to replace it) and
+starts `shoo setup`. To read the script first: download [install.sh](install.sh), look at it, then run
 `sh install.sh`. Run the same command again to update.
 
 From source:
@@ -99,8 +106,9 @@ Blocking levels, scored on the
 | `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
 | `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
-Logs: `~/Library/Logs/shoo.log` (`blocked <domain>`, `removed N ad fields` on YouTube) and
-`/Library/Logs/shoo-dns.log` (`dns blocked <domain>`).
+Logs: `~/Library/Logs/shoo.log` (`removed N ad fields` on YouTube, list refreshes, errors) and
+`/Library/Logs/shoo-dns.log`. Blocked domains aren't logged by name, so the logs don't become
+a record of the sites you visit (`shoo status` shows the count; `shoo-debug` logs them).
 
 Limits: ads served from a site's own domain (Facebook, Instagram, Reddit sponsored posts)
 are only hidden where EasyList has a rule for them. Rules that need scripts (uBlock's

@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"shoo/internal/certs"
@@ -185,22 +186,26 @@ func setup(dir, addr, pacURL string, yes bool) error {
 
 	step("shoo's certificate")
 	_, statCA := os.Stat(filepath.Join(dir, certs.CertFile))
+	replace := ""
+	if ca, err := certs.Load(dir); statCA == nil && err == nil {
+		// Old (YouTube-only, or able to sign for banks and logins) or
+		// about to expire: make a new one.
+		replace = certs.ReplaceReason(ca.Cert, sites.Exclusions(), s.Sites != sitesOff)
+	}
 	switch {
-	case statCA == nil && s.Sites != sitesOff && caConstrained(dir):
-		// Made by an older shoo, for YouTube only: hiding ads on other
-		// websites needs one that works for them too.
-		fmt.Println("  replacing the YouTube-only certificate with one for all websites")
+	case replace != "":
+		fmt.Printf("  replacing the certificate: %s\n", replace)
 		if err := untrust(dir); err != nil {
 			return fmt.Errorf("removing the old certificate: %w", err)
 		}
-		if err := certs.Generate(dir, true); err != nil {
+		if err := certs.Generate(dir, true, neverDecrypt(dir)); err != nil {
 			return err
 		}
 		fmt.Println("  created")
 	case statCA == nil:
 		fmt.Println("  already created")
 	default:
-		if err := certs.Generate(dir, false); err != nil {
+		if err := certs.Generate(dir, false, neverDecrypt(dir)); err != nil {
 			return err
 		}
 		fmt.Println("  created")
@@ -266,6 +271,10 @@ func setup(dir, addr, pacURL string, yes bool) error {
 		fmt.Println("  already on")
 	} else {
 		fmt.Println("  changing network settings needs your password (sudo)")
+		if !ownedByRoot(exe) {
+			fmt.Printf("  note: %s can be changed without a password; installing with install.sh\n"+
+				"  makes it admin-owned, so nothing can swap it before it runs with sudo\n", exe)
+		}
 		args := []string{exe, "enable", "-addr", addr}
 		if wantDNS {
 			args = append(args, "-dns", "-data", dir)
@@ -394,6 +403,22 @@ func uninstall(dir, addr, pacURL string, purge bool) error {
 		fmt.Printf("Your settings and lists are kept in %s (use -purge to delete them).\n", dir)
 	}
 	return nil
+}
+
+// ownedByRoot reports whether only an admin can change the file at path
+// (and the folder it is in).
+func ownedByRoot(path string) bool {
+	for _, p := range []string{path, filepath.Dir(path)} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func sudoRun(args ...string) error {

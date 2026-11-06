@@ -26,6 +26,15 @@ proton.me
 protonmail.com
 tuta.com
 
+# Email, documents and cloud accounts
+outlook.live.com
+outlook.office.com
+outlook.office365.com
+docs.google.com
+drive.google.com
+settings.aws.com
+signin.aws
+
 # Password managers
 1password.com
 1password.eu

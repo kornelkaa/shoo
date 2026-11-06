@@ -293,3 +293,25 @@ func TestYouTubeNeverSkipped(t *testing.T) {
 		}
 	}
 }
+
+// A website that rebinds its name to 127.0.0.1 must not read the PAC file
+// (it lists the user's own never-decrypt sites) or the stats.
+func TestHandlerOnlyAnswersLocalNames(t *testing.T) {
+	var passed int
+	px := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { passed++; w.WriteHeader(http.StatusBadRequest) })
+	h := NewHandler(px, "127.0.0.1:8899", sampleList(t), log.New(io.Discard, "", 0))
+	for _, path := range []string{"/proxy.pac", "/stats"} {
+		for host, ok := range map[string]bool{"127.0.0.1:8899": true, "evil.example:8899": false} {
+			r := httptest.NewRequest("GET", path, nil)
+			r.Host = host
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if (w.Code == http.StatusOK) != ok {
+				t.Errorf("%s with Host %s: %d", path, host, w.Code)
+			}
+		}
+	}
+	if passed != 2 {
+		t.Errorf("%d foreign requests reached the proxy, want 2 (which refuses them)", passed)
+	}
+}

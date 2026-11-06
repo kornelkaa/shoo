@@ -79,11 +79,12 @@ func askSettings(cur Settings, trusted bool) (s Settings, ok bool, err error) {
 
 	certLine := "• macOS asks for your password once, to trust shoo's certificate.\n" +
 		"  With it shoo decrypts websites on this Mac to remove ads and hide ad\n" +
-		"  boxes. Banks, logins, payments and Apple\n" +
-		"  services are never decrypted. The key never leaves your Mac."
+		"  boxes. Banks, logins, payments and Apple services are never\n" +
+		"  decrypted, and the certificate can't be used for them. The key\n" +
+		"  never leaves your Mac."
 	if trusted {
 		certLine = "• The certificate is already trusted: no password needed for it\n" +
-			"  (unless it's an old YouTube-only one, which is replaced)."
+			"  (unless it's old or expires soon: then it's replaced, which asks once)."
 	}
 	perms := certLine + "\n" +
 		"• Terminal asks for your password (sudo) once, to point macOS's network\n" +

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"shoo/internal/certs"
+	"shoo/internal/local"
 	"shoo/internal/proxy"
 	"shoo/internal/prune"
 	"shoo/internal/sites"
@@ -46,6 +47,9 @@ var adEventPaths = []string{"/api/stats/ads", "/pagead/", "/ptracking", "ad_brea
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8899", "listen address (same as shoo)")
 	flag.Parse()
+	if err := local.RequireLoopback(*addr); err != nil {
+		log.Fatal(err)
+	}
 
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -80,6 +84,7 @@ func main() {
 		log.Fatal(err)
 	}
 	h := sites.NewHandler(p, *addr, list, events)
+	h.LogBlocked = true // this debug log stays in its own private folder
 
 	var connects sync.Map // host -> *int64
 	top := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

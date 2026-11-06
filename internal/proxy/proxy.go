@@ -26,6 +26,7 @@ import (
 
 	"shoo/internal/certs"
 	"shoo/internal/cosmetic"
+	"shoo/internal/local"
 	"shoo/internal/prune"
 )
 
@@ -60,7 +61,9 @@ func (p *Proxy) blocked(host string) bool { return p.Blocked != nil && p.Blocked
 // shouldDecrypt decides whether a CONNECT to host:443 is decrypted.
 func (p *Proxy) shouldDecrypt(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	if !certs.ValidHost(host) {
+	// Never-decrypt sites the CA excludes, or a CA about to expire:
+	// tunnel instead of showing a certificate error.
+	if !p.CA.CanSign(host) {
 		return false
 	}
 	if p.Cosmetic != nil && host == cosmetic.AssetHost {
@@ -117,7 +120,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.handleConnect(w, r)
 	case r.URL.IsAbs() && r.URL.Scheme == "http":
 		p.plainHTTP().ServeHTTP(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/proxy.pac":
+	case r.Method == http.MethodGet && r.URL.Path == "/proxy.pac" && local.Request(r):
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		w.Header().Set("Cache-Control", "no-store")
 		io.WriteString(w, PAC(p.Addr))

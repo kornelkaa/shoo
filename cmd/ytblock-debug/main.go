@@ -28,6 +28,7 @@ import (
 	"ytblock/internal/proxy"
 	"ytblock/internal/prune"
 	"ytblock/internal/sites"
+	"ytblock/internal/ytextra"
 )
 
 // adMarkers are names YouTube uses for ad instructions. Finding one of these
@@ -70,9 +71,9 @@ func main() {
 	}
 	// The YouTube proxy, exactly as ytblock runs it; only its connection to
 	// YouTube is wrapped so responses can be recorded.
-	p := proxy.New(ca, prune.Default, events)
+	p := proxy.New(ca, ytextra.Rules(), events)
 	p.Addr = *addr
-	rec := &recorder{next: p.Upstream, rules: prune.Default, log: events, dir: filepath.Join(outDir, "responses")}
+	rec := &recorder{next: p.Upstream, rules: ytextra.Rules(), log: events, dir: filepath.Join(outDir, "responses")}
 	p.Upstream = rec
 
 	list, err := sites.Load(dataDir)

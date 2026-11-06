@@ -110,6 +110,10 @@ YouTube (frozen; `scripts/check-youtube-untouched.sh` checks it matches `main`):
 - `internal/certs` – per-machine CA with a name constraint
 - `internal/proxy` – CONNECT proxy; decrypts YouTube only
 
+Next to the YouTube code:
+- `internal/ytskip` – backup for ads that get past the removal: a script in YouTube pages that,
+  only while an ad is playing, mutes it, jumps to its end and presses Skip (wraps `proxy.Proxy.Upstream`)
+
 Other websites:
 - `internal/sites` – ad-domain list, combined PAC file, refusing blocked domains
 

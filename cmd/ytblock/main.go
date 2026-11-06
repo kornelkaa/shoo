@@ -19,6 +19,7 @@ import (
 	"ytblock/internal/proxy"
 	"ytblock/internal/prune"
 	"ytblock/internal/sites"
+	"ytblock/internal/ytskip"
 )
 
 const defaultAddr = "127.0.0.1:8899"
@@ -156,6 +157,9 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	logger := log.New(os.Stderr, "ytblock: ", log.LstdFlags)
 	p := proxy.New(ca, prune.Default, logger)
 	p.Addr = addr
+	// Next to p: a backup script in YouTube pages that mutes and skips an ad
+	// only if one still plays.
+	p.Upstream = &ytskip.Transport{Next: p.Upstream, Log: logger}
 	// YouTube is handled by p, unchanged. Ad-domain blocking for other sites
 	// wraps it and only adds the combined PAC file and the refusals.
 	var handler http.Handler = p

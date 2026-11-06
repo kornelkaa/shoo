@@ -1,9 +1,5 @@
 # shoo
 
-(Formerly called ytblock. `shoo setup` takes over an existing ytblock install: settings, lists
-and the trusted certificate carry over. A certificate created before the rename keeps its old
-name, "ytblock local CA", in Keychain Access; new ones are called "shoo local CA".)
-
 Blocks ads in Safari on macOS, and hides the empty boxes they leave behind. A local proxy
 decrypts the websites you visit, on your Mac, and cleans them up before Safari shows them.
 
@@ -100,7 +96,7 @@ Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
 ```sh
 shoo status                      # is everything on?
 shoo setup                       # change your choices
-shoo start / shoo stop        # start or stop the background service
+shoo start / shoo stop           # start or stop the background service
 shoo allow example.com           # a site broke: never block it
 shoo skip example.com            # a site or app broke: never decrypt it
 shoo block ads.example.com       # block something extra
@@ -151,10 +147,9 @@ sudo rm /usr/local/bin/shoo    # removes the command itself
 
 ## Releasing
 
-`scripts/release.sh 0.2.1` (from `main`, everything committed) runs the tests, builds one
-universal `shoo` for Apple Silicon and Intel, tags `v0.2.1` and publishes `shoo-macos.tar.gz`
+`scripts/release.sh 0.5.2` (from `main`, everything committed) runs the tests, builds one
+universal `shoo` for Apple Silicon and Intel, tags `v0.5.2` and publishes `shoo-macos.tar.gz`
 and its `.sha256` as a GitHub release. `install.sh` always installs the latest release.
-Downloads work for everyone once the repo is public.
 
 ## Layout
 
@@ -175,8 +170,9 @@ Downloads work for everyone once the repo is public.
   Runs as a system service (`/Library/LaunchDaemons/com.kornelkaa.shoo.dns.plist`) from a
   root-owned copy of shoo in `/Library/Application Support/shoo`; it opens port 53 and then
   switches to your user
-
+- `internal/local` – keeps shoo's servers reachable only from this Mac (loopback addresses)
 - `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
+- `cmd/shoo-debug` – the proxy plus YouTube recording, for when an ad gets through
 - `install.sh` – the curl installer; `scripts/release.sh` – publishes a release
 
 ## License

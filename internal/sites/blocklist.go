@@ -107,6 +107,9 @@ func (l *List) Len() int { return len(l.blocked) }
 
 func (l *List) pacSkip() []string { return sortedKeys(l.skip) }
 
+// SkipDomains are all never-decrypted domains: built-in and the user's own.
+func (l *List) SkipDomains() []string { return sortedKeys(l.skip) }
+
 // Load reads the downloaded list and the user's block/allow files from dir.
 // Missing files are treated as empty.
 func Load(dir string) (*List, error) {

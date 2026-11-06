@@ -43,7 +43,7 @@ func setupAllSites(t *testing.T) (*http.Client, *atomic.Int64) {
 	t.Cleanup(fake.Close)
 
 	dir := t.TempDir()
-	if err := certs.Generate(dir, false); err != nil {
+	if err := certs.Generate(dir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	ca, err := certs.Load(dir)
@@ -144,12 +144,28 @@ func TestYouTubeStillPruned(t *testing.T) {
 }
 
 func TestShouldDecrypt(t *testing.T) {
-	p := &Proxy{Decrypt: func(h string) bool { return h != "bank.example" }}
+	dir := t.TempDir()
+	if err := certs.Generate(dir, false, []string{"paypal.com"}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := certs.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Proxy{
+		CA:      ca,
+		Decrypt: func(h string) bool { return h != "bank.example" },
+		Blocked: func(h string) bool { return h == "ads.paypal.com" },
+	}
 	for host, want := range map[string]bool{
 		"www.example.com": true,
 		"bank.example":    false,
 		"1.2.3.4":         false,
 		"bad host":        false,
+		// The CA can't sign for these, so they're tunneled (or, when
+		// blocked, closed) instead of decrypted.
+		"www.paypal.com": false,
+		"ads.paypal.com": false,
 	} {
 		if got := p.shouldDecrypt(host); got != want {
 			t.Errorf("shouldDecrypt(%q) = %v, want %v", host, got, want)
@@ -160,7 +176,7 @@ func TestShouldDecrypt(t *testing.T) {
 		t.Error("a host whose app refused our certificate must be tunneled")
 	}
 	// Without Decrypt: YouTube only, as before.
-	q := &Proxy{}
+	q := &Proxy{CA: ca}
 	if !q.shouldDecrypt("www.youtube.com") || q.shouldDecrypt("www.example.com") {
 		t.Error("default should be YouTube only")
 	}

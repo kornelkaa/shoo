@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"shoo/internal/local"
 )
 
 // Handler sits in front of the proxy. It serves the PAC file and stats and
@@ -20,6 +22,9 @@ type Handler struct {
 	Proxy http.Handler
 	Addr  string
 	Log   *log.Logger
+	// LogBlocked logs each blocked site. Off normally: the log would become
+	// a record of the sites you visit.
+	LogBlocked bool
 
 	list    atomic.Pointer[List]
 	pac     atomic.Pointer[string]
@@ -47,7 +52,7 @@ type Stats struct {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if !r.URL.IsAbs() && r.Method == http.MethodGet {
+	if !r.URL.IsAbs() && r.Method == http.MethodGet && local.Request(r) {
 		switch r.URL.Path {
 		case "/proxy.pac":
 			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
@@ -72,7 +77,9 @@ func (h *Handler) Blocked(host string) bool {
 		return false
 	}
 	h.blocked.Add(1)
-	h.Log.Printf("blocked %s", host)
+	if h.LogBlocked {
+		h.Log.Printf("blocked %s", host)
+	}
 	return true
 }
 

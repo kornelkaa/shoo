@@ -175,6 +175,12 @@ func status(dir, addr, pacURL string) {
 		fmt.Println("  trusted, but YouTube only (run `shoo setup` to hide ads on other websites)")
 	} else if t {
 		fmt.Println("  trusted")
+		if ca, err := certs.Load(dir); err == nil {
+			fmt.Printf("  valid until %s\n", ca.Cert.NotAfter.Format("2006-01-02"))
+			if r := certs.ReplaceReason(ca.Cert, sites.Exclusions(), loadSettings(dir).Sites != sitesOff); r != "" {
+				fmt.Printf("  should be replaced (%s): run `shoo setup`\n", r)
+			}
+		}
 	} else {
 		fmt.Println("  NOT trusted (run `shoo trust`)")
 	}

@@ -1,9 +1,12 @@
 // Package certs creates and uses the per-machine certificate authority.
 //
 // The proxy decrypts websites (to remove YouTube's ad data and hide ad boxes
-// everywhere), so the CA signs certificates for any site name. Its private
-// key never leaves this Mac and is readable only by the user. IP addresses
-// are excluded: the CA can't sign for them.
+// everywhere), so the CA signs certificates for most site names. Its private
+// key never leaves this Mac and is readable only by the user. It can't sign
+// for IP addresses or for the never-decrypt sites (banks, logins, Apple...):
+// those are written into the certificate as excluded names, so even a stolen
+// key can't impersonate them. It lasts two years; `shoo setup` replaces it
+// before then.
 //
 // CAs made by older versions were limited to YouTube by a name constraint;
 // Constrained detects those so setup can replace them.
@@ -23,6 +26,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +41,20 @@ const (
 	KeyFile  = "ca-key.pem"
 )
 
+const (
+	// Lifetime is how long a new CA lasts.
+	Lifetime = 2 * 365 * 24 * time.Hour
+	// RenewBefore: setup replaces a CA that expires sooner than this.
+	RenewBefore = 30 * 24 * time.Hour
+	// stopBefore: the proxy stops decrypting this long before the CA
+	// expires, so websites keep working (without ad hiding) instead of
+	// showing certificate errors.
+	stopBefore = 48 * time.Hour
+	// maxLeaves caps the leaf certificate cache (a page can ask for any
+	// number of made-up subdomains).
+	maxLeaves = 4096
+)
+
 // Allowed reports whether host is YouTube or a subdomain of it.
 func Allowed(host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
@@ -48,9 +66,10 @@ func Allowed(host string) bool {
 	return false
 }
 
-// Generate writes a new CA to dir. The private key file is readable only by
-// the current user. It refuses to overwrite an existing CA unless force is set.
-func Generate(dir string, force bool) error {
+// Generate writes a new CA to dir. It can't sign for the excluded domains or
+// their subdomains. The private key file is readable only by the current
+// user. It refuses to overwrite an existing CA unless force is set.
+func Generate(dir string, force bool, excluded []string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -71,7 +90,7 @@ func Generate(dir string, force bool) error {
 		SerialNumber:          randSerial(),
 		Subject:               pkix.Name{CommonName: "shoo local CA (" + host + ")", Organization: []string{"shoo"}},
 		NotBefore:             now.Add(-time.Hour),
-		NotAfter:              now.AddDate(10, 0, 0),
+		NotAfter:              now.Add(Lifetime),
 		IsCA:                  true,
 		BasicConstraintsValid: true,
 		MaxPathLenZero:        true,
@@ -81,6 +100,7 @@ func Generate(dir string, force bool) error {
 			{IP: net.IPv4zero, Mask: net.CIDRMask(0, 32)},
 			{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)},
 		},
+		ExcludedDNSDomains: cleanDomains(excluded),
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {
@@ -95,6 +115,53 @@ func Generate(dir string, force bool) error {
 		return err
 	}
 	return writePEM(certPath, "CERTIFICATE", der, 0o644)
+}
+
+// cleanDomains lowercases, dedupes and sorts domains, dropping invalid ones.
+func cleanDomains(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range in {
+		d = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(d), "."))
+		if ValidHost(d) && strings.Contains(d, ".") && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// excludedName reports whether cert's name constraints exclude host.
+func excludedName(cert *x509.Certificate, host string) bool {
+	for _, d := range cert.ExcludedDNSDomains {
+		d = strings.ToLower(strings.TrimPrefix(d, "."))
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReplaceReason says why setup should replace cert with a new CA, or ""
+// if it's fine. excluded are the never-decrypt sites a CA must exclude;
+// allSites is whether shoo works on other websites (not just YouTube).
+func ReplaceReason(cert *x509.Certificate, excluded []string, allSites bool) string {
+	if time.Until(cert.NotAfter) < RenewBefore {
+		return "it expires " + cert.NotAfter.Format("2006-01-02")
+	}
+	if Constrained(cert) {
+		if allSites {
+			return "it only works for YouTube"
+		}
+		return ""
+	}
+	for _, d := range cleanDomains(excluded) {
+		if !excludedName(cert, d) {
+			return "it can sign for never-decrypt sites like " + d
+		}
+	}
+	return ""
 }
 
 func writePEM(path, typ string, der []byte, mode os.FileMode) error {
@@ -186,9 +253,20 @@ func ValidHost(host string) bool {
 	return true
 }
 
+// CanSign reports whether a certificate for host would be accepted: a valid
+// site name the CA doesn't exclude, while the CA isn't about to expire.
+func (a *Authority) CanSign(host string) bool {
+	if !ValidHost(host) {
+		return false
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	now := time.Now()
+	return !excludedName(a.Cert, host) && now.After(a.Cert.NotBefore) && a.Cert.NotAfter.Sub(now) > stopBefore
+}
+
 // LeafFor returns a certificate for host.
 func (a *Authority) LeafFor(host string) (*tls.Certificate, error) {
-	if !ValidHost(host) {
+	if !a.CanSign(host) {
 		return nil, fmt.Errorf("refusing to sign for %q", host)
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
@@ -202,6 +280,9 @@ func (a *Authority) LeafFor(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(a.cache) >= maxLeaves {
+		a.cache = map[string]*tls.Certificate{}
+	}
 	a.cache[host] = c
 	return c, nil
 }
@@ -209,12 +290,16 @@ func (a *Authority) LeafFor(host string) (*tls.Certificate, error) {
 // sign issues a leaf certificate for host.
 func (a *Authority) sign(host string) (*tls.Certificate, error) {
 	now := time.Now()
+	notAfter := now.AddDate(0, 0, 30)
+	if notAfter.After(a.Cert.NotAfter) {
+		notAfter = a.Cert.NotAfter // never outlive the CA
+	}
 	tmpl := &x509.Certificate{
 		SerialNumber: randSerial(),
 		Subject:      pkix.Name{CommonName: host},
 		DNSNames:     []string{host},
 		NotBefore:    now.Add(-time.Hour),
-		NotAfter:     now.AddDate(0, 0, 30),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}

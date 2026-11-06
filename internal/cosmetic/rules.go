@@ -177,7 +177,8 @@ var knownPseudo = map[string]bool{
 var pseudoRe = regexp.MustCompile(`:([a-zA-Z-]+)`)
 
 // validSelector rejects selectors that aren't plain CSS or could break out
-// of the generated stylesheet.
+// of the generated stylesheet. '@', ';' and "/*" are allowed only inside
+// quoted attribute values (e.g. [href^="mailto:"], [title="a;b"]).
 func validSelector(sel string) bool {
 	if sel == "" || len(sel) > 1000 || strings.ContainsAny(sel, "{}\\\n\r") || strings.Contains(sel, "</") || strings.Contains(sel, "::") {
 		return false
@@ -198,6 +199,13 @@ func validSelector(sel string) bool {
 		case '"', '\'':
 			quote = c
 			continue
+		case '@', ';':
+			// "@import url(...);" would load a stylesheet from anywhere.
+			return false
+		case '/':
+			if i+1 < len(sel) && sel[i+1] == '*' {
+				return false // a comment could swallow the rules after it
+			}
 		case '(':
 			depthRound++
 		case ')':

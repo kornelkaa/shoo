@@ -12,7 +12,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +21,7 @@ import (
 
 	"shoo/internal/certs"
 	"shoo/internal/cosmetic"
+	"shoo/internal/local"
 	"shoo/internal/proxy"
 	"shoo/internal/prune"
 	"shoo/internal/sites"
@@ -88,7 +88,7 @@ func main() {
 	dnsOn := fs.Bool("dns", false, "enable: also turn on the ad-blocking DNS service")
 	dataFlag := fs.String("data", "", "enable -dns, dns: shoo's data folder")
 	fs.Parse(os.Args[2:])
-	if err := requireLoopback(*addr); err != nil {
+	if err := local.RequireLoopback(*addr); err != nil {
 		log.Fatal(err)
 	}
 	pacURL := "http://" + *addr + "/proxy.pac?v=" + pacVersion
@@ -123,7 +123,7 @@ func main() {
 	case "version", "-version", "--version":
 		fmt.Println("shoo", version)
 	case "init-ca":
-		err = certs.Generate(dir, *force)
+		err = certs.Generate(dir, *force, neverDecrypt(dir))
 		if err == nil {
 			fmt.Printf("Created %s\nNext: shoo trust\n", filepath.Join(dir, certs.CertFile))
 		}
@@ -225,6 +225,8 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	if sitesOn {
 		if certs.Constrained(ca.Cert) {
 			logger.Printf("the certificate only works for YouTube: run `shoo setup` to block ads and hide ad boxes on other websites")
+		} else if r := certs.ReplaceReason(ca.Cert, sites.Exclusions(), true); r != "" {
+			logger.Printf("the certificate should be replaced (%s): run `shoo setup`", r)
 		}
 		list, err := sites.Load(dir)
 		if err != nil {
@@ -270,6 +272,15 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	return srv.ListenAndServe()
 }
 
+// neverDecrypt is the built-in never-decrypt list plus the user's own
+// (`shoo skip`). A new CA can't sign for any of them.
+func neverDecrypt(dir string) []string {
+	if l, err := sites.Load(dir); err == nil {
+		return l.SkipDomains()
+	}
+	return sites.Exclusions()
+}
+
 // watchFile calls changed when the file at path changes.
 func watchFile(path string, every time.Duration, changed func()) {
 	state := func() string {
@@ -307,15 +318,4 @@ func dataDir() (string, error) {
 		}
 	}
 	return dir, nil
-}
-
-func requireLoopback(addr string) error {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return err
-	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("refusing to use %s: only loopback IP addresses like 127.0.0.1 are allowed", addr)
-	}
-	return nil
 }

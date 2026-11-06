@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"shoo/internal/certs"
 )
 
 // AssetHost is the name the proxy answers for itself to serve the hiding
@@ -26,7 +28,12 @@ type Engine struct {
 	version atomic.Int64
 	generic atomic.Pointer[[]byte]
 	sites   sync.Map // host -> []byte (CSS for that site)
+	nsites  atomic.Int64
 }
+
+// maxSites caps the per-site stylesheet cache. Any page can ask for
+// s.css?h=<anything>, so without a cap it could grow without end.
+const maxSites = 4096
 
 // NewEngine returns an engine using rules (may be nil: no hiding).
 func NewEngine(r *Rules) *Engine {
@@ -44,6 +51,7 @@ func (e *Engine) SetRules(r *Rules) {
 	e.rules.Store(r)
 	e.generic.Store(&g)
 	e.sites.Clear()
+	e.nsites.Store(0)
 	e.version.Store(time.Now().UnixNano())
 }
 
@@ -55,6 +63,10 @@ func (e *Engine) siteCSS(host string) []byte {
 		return v.([]byte)
 	}
 	css := CSS(e.rules.Load().SiteSelectors(host))
+	if e.nsites.Add(1) > maxSites {
+		e.sites.Clear()
+		e.nsites.Store(1)
+	}
 	e.sites.Store(host, css)
 	return css
 }
@@ -79,7 +91,12 @@ func (e *Engine) ServeAsset(w http.ResponseWriter, r *http.Request) {
 	case "/g.css":
 		css = *e.generic.Load()
 	case "/s.css":
-		css = e.siteCSS(strings.ToLower(r.URL.Query().Get("h")))
+		h := strings.ToLower(r.URL.Query().Get("h"))
+		if !certs.ValidHost(h) {
+			http.NotFound(w, r)
+			return
+		}
+		css = e.siteCSS(h)
 	default:
 		http.NotFound(w, r)
 		return

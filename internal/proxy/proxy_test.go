@@ -51,7 +51,7 @@ func setupWithURL(t *testing.T) (*http.Client, *int, string) {
 	t.Cleanup(fake.Close)
 
 	dir := t.TempDir()
-	if err := certs.Generate(dir, false); err != nil {
+	if err := certs.Generate(dir, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	ca, err := certs.Load(dir)

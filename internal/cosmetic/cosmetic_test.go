@@ -1,6 +1,7 @@
 package cosmetic
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,8 +62,10 @@ func TestParse(t *testing.T) {
 }
 
 func TestValidSelector(t *testing.T) {
-	good := []string{".ad", `a[href^="https://x.com/"] > img`, `div:not(.a):has(> .b)`, `[data-x="a:b{c}"]`}
-	bad := []string{"", ".a{}", ".a::after", ".a:contains(x)", `.a[href="x"`, ".a)", "</style><script>", `.a\`}
+	good := []string{".ad", `a[href^="https://x.com/"] > img`, `div:not(.a):has(> .b)`, `[data-x="a:b{c}"]`, `a[href^="mailto:"]`, `[href*="@"]`, `[title="a;b"]`, `[alt="/*x"]`}
+	bad := []string{"", ".a{}", ".a::after", ".a:contains(x)", `.a[href="x"`, ".a)", "</style><script>", `.a\`,
+		`@import url("https://evil.example/x.css");div`, "@import url(https://evil.example/x.css);div",
+		".a;b", ".a /* x */", "@media print"}
 	for _, s := range good {
 		if s == `[data-x="a:b{c}"]` {
 			continue // braces are always refused, even quoted
@@ -142,7 +145,29 @@ func TestServeAsset(t *testing.T) {
 	if code, body := get("https://" + AssetHost + "/s.css?h=www.example.com&v=1"); code != 200 || !strings.Contains(body, ".example-only") || strings.Contains(body, ".shared-ad") {
 		t.Errorf("s.css: %d %q", code, body)
 	}
+	if code, _ := get("https://" + AssetHost + "/s.css?h=bad%20name"); code != 404 {
+		t.Errorf("bad host: %d", code)
+	}
+	for i := 0; i < maxSites+10; i++ {
+		get(fmt.Sprintf("https://%s/s.css?h=x%d.example", AssetHost, i))
+	}
+	if n := e.nsites.Load(); n > maxSites {
+		t.Errorf("site cache holds %d entries, cap is %d", n, maxSites)
+	}
 	if code, _ := get("https://" + AssetHost + "/other"); code != 404 {
 		t.Errorf("other path: %d", code)
+	}
+}
+
+// A filter list must not be able to make the stylesheet load another one.
+func TestNoImportFromLists(t *testing.T) {
+	r, err := Parse(strings.NewReader("victim.example##@import url(\"https://evil.example/x.css\");div\n" +
+		"##@import url(https://evil.example/g.css);p\n##.ad\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(CSS(r.generic)) + string(CSS(r.SiteSelectors("victim.example")))
+	if strings.Contains(css, "@") || strings.Contains(css, "evil") {
+		t.Errorf("stylesheet loads another: %q", css)
 	}
 }

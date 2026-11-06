@@ -110,10 +110,7 @@ func (s *Server) handle(q []byte, network string) []byte {
 		return nil
 	}
 	if name != "" && s.Blocked != nil && s.Blocked(name) {
-		s.blocked.Add(1)
-		if s.Log != nil && (qtype == typeA || qtype == typeAAAA) {
-			s.Log.Printf("dns blocked %s", name)
-		}
+		s.blocked.Add(1) // not logged by name: the log would list the sites you visit
 		return blockedAnswer(q, qtype, qend)
 	}
 	resp, err := s.forward(q, network)

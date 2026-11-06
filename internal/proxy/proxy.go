@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/prune"
+	"shoo/internal/certs"
+	"shoo/internal/prune"
 )
 
 const maxBody = 32 << 20 // responses bigger than this are passed through
@@ -79,7 +79,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		io.WriteString(w, PAC(p.Addr))
 	default:
-		http.Error(w, "ytblock proxy", http.StatusBadRequest)
+		http.Error(w, "shoo proxy", http.StatusBadRequest)
 	}
 }
 

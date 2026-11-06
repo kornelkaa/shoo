@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"ytblock/internal/certs"
-	"ytblock/internal/prune"
+	"shoo/internal/certs"
+	"shoo/internal/prune"
 )
 
 const watchHTML = `<html><script>var ytInitialPlayerResponse = {"videoDetails":{"videoId":"abc"},"adPlacements":[{"x":1}]};</script></html>`

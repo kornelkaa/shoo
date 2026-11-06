@@ -31,12 +31,16 @@ everything else    → direct, never touches shoo
 
 ## Install
 
-With Homebrew (once the repo is public):
+In Terminal:
 
 ```sh
-brew install kornelkaa/tap/shoo
-shoo setup
+curl -fsSL https://raw.githubusercontent.com/kornelkaa/shoo/main/install.sh | sh
 ```
+
+This downloads the latest release (one file for Apple Silicon and Intel Macs), checks its
+SHA-256 checksum, puts `shoo` in `/usr/local/bin` (asks for your password if needed) and starts
+`shoo setup`. To read the script first: download [install.sh](install.sh), look at it, then run
+`sh install.sh`. Run the same command again to update.
 
 From source:
 
@@ -105,15 +109,16 @@ contain ad data after shoo's removal (saved in `responses/`).
 ## Uninstall
 
 ```sh
-shoo uninstall          # turns everything off; add -purge to also delete settings and lists
-brew uninstall shoo     # if installed with Homebrew
+shoo uninstall                 # turns everything off; add -purge to also delete settings and lists
+sudo rm /usr/local/bin/shoo    # removes the command itself
 ```
 
 ## Releasing
 
-`scripts/release.sh 0.1.0` (from `main`, repo must be public) tags the release, creates it
-on GitHub, and fills in `url` and `sha256` in `packaging/homebrew/shoo.rb`. Copy that file
-to `Formula/shoo.rb` in the `kornelkaa/homebrew-tap` repo.
+`scripts/release.sh 0.2.1` (from `main`, everything committed) runs the tests, builds one
+universal `shoo` for Apple Silicon and Intel, tags `v0.2.1` and publishes `shoo-macos.tar.gz`
+and its `.sha256` as a GitHub release. `install.sh` always installs the latest release.
+Downloads work for everyone once the repo is public.
 
 ## Layout
 
@@ -130,7 +135,11 @@ Other websites:
 - `internal/sites` – ad-domain list, combined PAC file, refusing blocked domains
 
 - `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
-- `packaging/homebrew` – Homebrew formula
+- `install.sh` – the curl installer; `scripts/release.sh` – publishes a release
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Next steps
 

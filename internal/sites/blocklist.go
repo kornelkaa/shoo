@@ -48,9 +48,20 @@ var protected = append([]string{
 	"youtubei.googleapis.com",
 }, certs.AllowedDomains...)
 
+// youtubeAds are YouTube's ad-only hosts: blocked like any ad domain (if a
+// list has them), though they're under youtube.com. Nothing YouTube's pages
+// or player need is served from them.
+var youtubeAds = toSet([]string{"ads.youtube.com"})
+
 // IsYouTube reports whether host belongs to YouTube and must be left alone.
 func IsYouTube(host string) bool {
-	return inSuffixSet(toSet(protected), normalize(host))
+	host = normalize(host)
+	return inSuffixSet(toSet(protected), host) && !inSuffixSet(youtubeAds, host)
+}
+
+// protectedHost reports whether host is one of YouTube's own hosts.
+func (l *List) protectedHost(host string) bool {
+	return inSuffixSet(l.prot, host) && !inSuffixSet(youtubeAds, host)
 }
 
 // List decides which hosts are blocked.
@@ -81,10 +92,17 @@ func NewList(blocked, allowed []string) *List {
 // Blocked reports whether connections to host should be refused.
 func (l *List) Blocked(host string) bool {
 	host = normalize(host)
-	if inSuffixSet(l.prot, host) || inSuffixSet(l.allowed, host) {
+	if l.protectedHost(host) || inSuffixSet(l.allowed, host) {
 		return false
 	}
 	return inSuffixSet(l.blocked, host)
+}
+
+// Exempt reports whether host must never be blocked, not even one URL of
+// it: YouTube (handled by its own code) and domains the user allowed.
+func (l *List) Exempt(host string) bool {
+	host = normalize(host)
+	return l.protectedHost(host) || inSuffixSet(l.allowed, host)
 }
 
 // Decrypt reports whether the proxy may decrypt host (to block ads in it and

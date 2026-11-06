@@ -240,8 +240,8 @@ func setup(dir, addr, pacURL string, yes bool) error {
 			fmt.Printf("  %d ad domains\n", n)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, cosmetic.ListFile)); s.Sites != sitesOff && err != nil {
-		fmt.Println("  downloading element-hiding lists (EasyList, Hufilter)...")
+	if s.Sites != sitesOff && !cosmetic.Current(dir) {
+		fmt.Println("  downloading filter lists (EasyList, EasyPrivacy, uBlock Origin, Hufilter)...")
 		if n, err := cosmetic.Update(context.Background(), dir); err != nil {
 			fmt.Printf("  could not download (%v); the background service will retry\n", err)
 		} else {

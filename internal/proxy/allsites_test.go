@@ -16,6 +16,7 @@ import (
 
 	"shoo/internal/certs"
 	"shoo/internal/cosmetic"
+	"shoo/internal/netfilter"
 	"shoo/internal/prune"
 )
 
@@ -58,6 +59,13 @@ func setupAllSites(t *testing.T) (*http.Client, *atomic.Int64) {
 	p.Decrypt = func(host string) bool { return host != "bank.example" }
 	p.Blocked = func(host string) bool { return strings.HasSuffix(host, "ads.example") }
 	p.Cosmetic = cosmetic.NewEngine(rules)
+	urlRules, err := netfilter.Parse(strings.NewReader("/ads/banner.js\n||tracker.example^$third-party\n@@||www.example.com/ads/banner.js$domain=allowed.example\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Filter = func(r *http.Request, scheme, host string) bool {
+		return urlRules.Match(netfilter.FromHTTP(r, scheme, host)) != ""
+	}
 	p.Upstream = &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", fake.Listener.Addr().String())
@@ -125,9 +133,9 @@ func TestStylesheetsServed(t *testing.T) {
 func TestAdDomainsAnsweredByProxy(t *testing.T) {
 	c, hits := setupAllSites(t)
 	for _, u := range []string{"https://cdn.ads.example/tag.js", "http://ads.example/pixel.gif"} {
-		resp, body := fetch(t, c, u, false)
-		if resp.StatusCode != http.StatusForbidden || body != "" {
-			t.Errorf("%s: %d %q, want empty 403", u, resp.StatusCode, body)
+		if resp, err := c.Get(u); err == nil {
+			resp.Body.Close()
+			t.Errorf("%s: got %d, want a network error", u, resp.StatusCode)
 		}
 	}
 	if hits.Load() != 0 {
@@ -179,5 +187,45 @@ func TestShouldDecrypt(t *testing.T) {
 	q := &Proxy{CA: ca}
 	if !q.shouldDecrypt("www.youtube.com") || q.shouldDecrypt("www.example.com") {
 		t.Error("default should be YouTube only")
+	}
+}
+
+// Single ad scripts and trackers are blocked by URL (a network error, 0
+// here); the rest of the site still loads.
+func TestURLRules(t *testing.T) {
+	c, hits := setupAllSites(t)
+	get := func(u, referer string) int {
+		req, _ := http.NewRequest("GET", u, nil)
+		req.Header.Set("Sec-Fetch-Dest", "script")
+		if referer != "" {
+			req.Header.Set("Referer", referer)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			return 0 // refused: network error
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	cases := []struct {
+		url, referer string
+		want         int
+	}{
+		{"https://www.example.com/ads/banner.js", "https://www.example.com/", 0},
+		{"https://www.example.com/app.js", "https://www.example.com/", 200},
+		{"https://www.example.com/ads/banner.js", "https://allowed.example/", 200}, // @@ exception
+		{"https://tracker.example/t.js", "https://www.example.com/", 0},
+		{"https://tracker.example/t.js", "https://tracker.example/", 200}, // first-party
+		{"http://www.example.com/ads/banner.js", "", 0},
+	}
+	for _, c := range cases {
+		before := hits.Load()
+		if got := get(c.url, c.referer); got != c.want {
+			t.Errorf("%s from %q: %d, want %d", c.url, c.referer, got, c.want)
+		}
+		if c.want == 0 && hits.Load() != before {
+			t.Errorf("%s reached the site", c.url)
+		}
 	}
 }

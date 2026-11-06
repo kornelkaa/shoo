@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"shoo/internal/certs"
 	"shoo/internal/cosmetic"
 	"shoo/internal/local"
+	"shoo/internal/netfilter"
 	"shoo/internal/proxy"
 	"shoo/internal/prune"
 	"shoo/internal/sites"
@@ -171,7 +173,8 @@ func main() {
 			n, err = cosmetic.Update(context.Background(), dir)
 		}
 		if err == nil {
-			fmt.Printf("Saved %d element-hiding rules. A running proxy picks them up within a minute.\n", n)
+			nr, _ := netfilter.Load(dir, cosmetic.ListFile)
+			fmt.Printf("Saved %d element-hiding rules and %d URL rules. A running proxy picks them up within a minute.\n", n, nr.Len())
 		}
 	case "block", "allow", "skip":
 		err = addDomain(dir, cmd, fs.Arg(0))
@@ -239,18 +242,39 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		if err != nil {
 			return err
 		}
+		netRules, err := netfilter.Load(dir, cosmetic.ListFile)
+		if err != nil {
+			return err
+		}
 		h := sites.NewHandler(p, addr, list, logger)
+		urlRules := netfilter.NewEngine(netRules)
 		if !certs.Constrained(ca.Cert) {
 			p.Decrypt = h.Decrypt
 			p.Cosmetic = cosmetic.NewEngine(rules)
+			p.Filter = func(r *http.Request, scheme, host string) bool {
+				if h.Exempt(hostOnly(host)) {
+					return false
+				}
+				if urlRules.Match(netfilter.FromHTTP(r, scheme, host)) == "" {
+					return false
+				}
+				h.CountBlocked()
+				return true
+			}
 		}
 		p.Blocked = h.Blocked
 		go h.Watch(dir, 30*time.Second)
 		go sites.AutoUpdate(context.Background(), dir, 7*24*time.Hour, logger)
 		if p.Cosmetic != nil {
+			// The filter lists file has both kinds of rules.
 			reload := func(r *cosmetic.Rules) {
 				p.Cosmetic.SetRules(r)
-				logger.Printf("element-hiding rules loaded: %d", r.Len())
+				if nr, err := netfilter.Load(dir, cosmetic.ListFile); err != nil {
+					logger.Printf("loading URL rules: %v", err)
+				} else {
+					urlRules.SetRules(nr)
+				}
+				logger.Printf("filter lists loaded: %d element-hiding rules, %d URL rules", r.Len(), urlRules.Rules().Len())
 			}
 			go watchFile(filepath.Join(dir, cosmetic.ListFile), 30*time.Second, func() {
 				if r, err := cosmetic.Load(dir); err == nil {
@@ -260,7 +284,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 			go cosmetic.AutoUpdate(context.Background(), dir, 7*24*time.Hour, logger, reload)
 		}
 		handler = h
-		logger.Printf("blocking %d ad domains, hiding ad boxes with %d rules", list.Len(), rules.Len())
+		logger.Printf("blocking %d ad domains and %d URL rules, hiding ad boxes with %d rules", list.Len(), urlRules.Rules().Len(), rules.Len())
 	}
 	srv := &http.Server{
 		Addr:              addr,
@@ -270,6 +294,13 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	}
 	logger.Printf("shoo %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
+}
+
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
 }
 
 // neverDecrypt is the built-in never-decrypt list plus the user's own

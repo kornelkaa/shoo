@@ -18,6 +18,7 @@ import (
 
 	"shoo/internal/certs"
 	"shoo/internal/cosmetic"
+	"shoo/internal/netfilter"
 	"shoo/internal/sites"
 )
 
@@ -216,6 +217,9 @@ func status(dir, addr, pacURL string) {
 		fmt.Printf("  %d ad domains, list updated %s\n", l.Len(), fi.ModTime().Format("2006-01-02 15:04"))
 		if r, err := cosmetic.Load(dir); err == nil && r.Len() > 0 {
 			fmt.Printf("  %d rules for hiding ad boxes\n", r.Len())
+			if nr, err := netfilter.Load(dir, cosmetic.ListFile); err == nil {
+				fmt.Printf("  %d URL rules (single ad scripts, images, trackers)\n", nr.Len())
+			}
 		} else {
 			fmt.Println("  no element-hiding lists (run `shoo update-lists`)")
 		}

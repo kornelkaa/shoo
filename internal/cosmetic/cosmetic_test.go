@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -169,5 +171,29 @@ func TestNoImportFromLists(t *testing.T) {
 	css := string(CSS(r.generic)) + string(CSS(r.SiteSelectors("victim.example")))
 	if strings.Contains(css, "@") || strings.Contains(css, "evil") {
 		t.Errorf("stylesheet loads another: %q", css)
+	}
+}
+
+func TestCurrent(t *testing.T) {
+	dir := t.TempDir()
+	if Current(dir) {
+		t.Error("no file: not current")
+	}
+	write := func(urls []string) {
+		var b strings.Builder
+		for _, u := range urls {
+			fmt.Fprintf(&b, "! Source: %s\n##.ad\n", u)
+		}
+		if err := os.WriteFile(filepath.Join(dir, ListFile), []byte(b.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(Lists[:1])
+	if Current(dir) {
+		t.Error("missing lists: not current")
+	}
+	write(Lists)
+	if !Current(dir) {
+		t.Error("all lists: current")
 	}
 }

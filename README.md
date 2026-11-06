@@ -1,4 +1,8 @@
-# ytblock
+# shoo
+
+(Formerly called ytblock. `shoo setup` takes over an existing ytblock install: settings, lists
+and the trusted certificate carry over. The certificate keeps its name, "ytblock local CA", in
+Keychain Access.)
 
 Blocks ads in Safari on macOS.
 
@@ -15,7 +19,7 @@ domains can never be blocked by the ad-domain list.
 ```
 YouTube            → YouTube proxy (removes ad fields)   internal/proxy, prune, certs
 known ad domain    → refused                              internal/sites
-everything else    → direct, never touches ytblock
+everything else    → direct, never touches shoo
 ```
 
 - Only YouTube and ad domains go through the proxy (via a PAC file). Everything else connects directly.
@@ -30,34 +34,42 @@ everything else    → direct, never touches ytblock
 With Homebrew (once the repo is public):
 
 ```sh
-brew install kornelkaa/tap/ytblock
-ytblock setup
+brew install kornelkaa/tap/shoo
+shoo setup
 ```
 
 From source:
 
 ```sh
-go build -o ytblock ./cmd/ytblock
-./ytblock setup
+go build -o shoo ./cmd/shoo
+./shoo setup
 ```
 
-`setup` asks for your password twice (once to trust the certificate, once to change the
-network setting), then:
+`setup` asks a few questions first (arrow keys + Enter):
 
-1. creates this Mac's YouTube-only certificate and trusts it
+- block ads on other websites: off, balanced, strict (default) or max
+- start automatically at login (default yes; otherwise `shoo start` when you want it)
+- a summary of the two password prompts, and whether to continue
+
+Your answers are saved, so running `setup` again starts from them (`setup -yes` skips the
+questions). Then it:
+
+1. creates this Mac's YouTube-only certificate and trusts it (macOS password window)
 2. downloads the ad-domain lists (refreshed automatically every week)
-3. installs a background service that starts at login and restarts if it stops
-4. points macOS at the PAC file
+3. installs the background service
+4. points macOS at the PAC file (sudo password in Terminal)
 
 Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
 
 ## Everyday use
 
 ```sh
-ytblock status                      # is everything on?
-ytblock allow example.com           # a site broke: never block it
-ytblock block ads.example.com       # block something extra
-ytblock update-lists -level balanced   # fewer blocked domains if sites break (strict = default, max = most)
+shoo status                      # is everything on?
+shoo setup                       # change your choices
+shoo start / shoo stop        # start or stop the background service
+shoo allow example.com           # a site broke: never block it
+shoo block ads.example.com       # block something extra
+shoo update-lists -level balanced   # fewer blocked domains if sites break (strict = default, max = most)
 ```
 
 Blocking levels, scored on the
@@ -69,7 +81,7 @@ Blocking levels, scored on the
 | `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
 | `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
-Log: `~/Library/Logs/ytblock.log` (`blocked <domain>` for other sites, `removed N ad fields` on YouTube).
+Log: `~/Library/Logs/shoo.log` (`blocked <domain>` for other sites, `removed N ad fields` on YouTube).
 
 Limits on other websites: empty ad boxes can remain, and ads served from a site's own
 domain (Facebook, Instagram, Reddit sponsored posts) aren't blocked. Other Mac apps
@@ -77,31 +89,31 @@ that use the system proxy settings also get ad domains blocked.
 
 ## When an ad gets through
 
-`ytblock-debug` runs exactly like `ytblock run` (same YouTube and other-site code,
+`shoo-debug` runs exactly like `shoo run` (same YouTube and other-site code,
 unchanged) and also records what YouTube sends. Use it in place of the normal proxy
 until an ad gets through:
 
 ```sh
-go build -o ytblock-debug ./cmd/ytblock-debug
-./ytblock-debug        # stop `ytblock run` first; Ctrl+C when done
+go build -o shoo-debug ./cmd/shoo-debug
+./shoo-debug        # stop `shoo run` first; Ctrl+C when done
 ```
 
-Results go to `~/Library/Logs/ytblock-debug/<time>/events.log` and stay on your Mac.
+Results go to `~/Library/Logs/shoo-debug/<time>/events.log` and stay on your Mac.
 `AD-EVENT` lines are the player reporting an ad; `LEAK?` lines are responses that still
-contain ad data after ytblock's removal (saved in `responses/`).
+contain ad data after shoo's removal (saved in `responses/`).
 
 ## Uninstall
 
 ```sh
-ytblock uninstall          # turns everything off; add -purge to also delete settings and lists
-brew uninstall ytblock     # if installed with Homebrew
+shoo uninstall          # turns everything off; add -purge to also delete settings and lists
+brew uninstall shoo     # if installed with Homebrew
 ```
 
 ## Releasing
 
 `scripts/release.sh 0.1.0` (from `main`, repo must be public) tags the release, creates it
-on GitHub, and fills in `url` and `sha256` in `packaging/homebrew/ytblock.rb`. Copy that file
-to `Formula/ytblock.rb` in the `kornelkaa/homebrew-tap` repo.
+on GitHub, and fills in `url` and `sha256` in `packaging/homebrew/shoo.rb`. Copy that file
+to `Formula/shoo.rb` in the `kornelkaa/homebrew-tap` repo.
 
 ## Layout
 
@@ -117,7 +129,7 @@ Next to the YouTube code:
 Other websites:
 - `internal/sites` – ad-domain list, combined PAC file, refusing blocked domains
 
-- `cmd/ytblock` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
+- `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
 - `packaging/homebrew` – Homebrew formula
 
 ## Next steps

@@ -32,7 +32,7 @@ func loginKeychain() (string, error) {
 // macOS shows a password prompt. Safari and Chrome read this trust setting.
 func trust(dir string) error {
 	if os.Geteuid() == 0 {
-		return errors.New("run `ytblock trust` without sudo, so the certificate goes into your own keychain")
+		return errors.New("run `shoo trust` without sudo, so the certificate goes into your own keychain")
 	}
 	kc, err := loginKeychain()
 	if err != nil {
@@ -73,7 +73,7 @@ func isTrusted(dir string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	f, err := os.CreateTemp("", "ytblock-leaf-*.pem")
+	f, err := os.CreateTemp("", "shoo-leaf-*.pem")
 	if err != nil {
 		return false, err
 	}
@@ -124,7 +124,7 @@ func autoProxy(svc string) (url string, enabled bool) {
 // different PAC file the user already has, unless force is set.
 func enable(pacURL string, force bool) error {
 	if os.Geteuid() != 0 {
-		return errors.New("changing network settings needs admin rights: run `sudo ytblock enable`")
+		return errors.New("changing network settings needs admin rights: run `sudo shoo enable`")
 	}
 	svcs, err := networkServices()
 	if err != nil {
@@ -149,7 +149,7 @@ func enable(pacURL string, force bool) error {
 // disable turns the PAC setting off, only where it's ours.
 func disable(pacURL string) error {
 	if os.Geteuid() != 0 {
-		return errors.New("changing network settings needs admin rights: run `sudo ytblock disable`")
+		return errors.New("changing network settings needs admin rights: run `sudo shoo disable`")
 	}
 	svcs, err := networkServices()
 	if err != nil {
@@ -173,13 +173,13 @@ func status(dir, addr, pacURL string) {
 	} else if t {
 		fmt.Println("  trusted")
 	} else {
-		fmt.Println("  NOT trusted (run `ytblock trust`)")
+		fmt.Println("  NOT trusted (run `shoo trust`)")
 	}
 
 	fmt.Printf("Proxy on %s:\n", addr)
 	c := http.Client{Timeout: 2 * time.Second}
 	if resp, err := c.Get(pacURL); err != nil {
-		fmt.Println("  NOT running (run `ytblock run`)")
+		fmt.Println("  NOT running (run `shoo run`)")
 	} else {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
@@ -187,15 +187,22 @@ func status(dir, addr, pacURL string) {
 	}
 
 	fmt.Println("Background service:")
-	if agentLoaded() {
+	set := loadSettings(dir)
+	if agentLoaded() && set.StartAtLogin {
 		fmt.Println("  installed (starts at login)")
+	} else if agentLoaded() {
+		fmt.Println("  installed (doesn't start at login: run `shoo start`)")
+	} else if p, err := agentPlistPath(); err == nil && fileExists(p) {
+		fmt.Println("  stopped (run `shoo start`)")
 	} else {
-		fmt.Println("  not installed (run `ytblock setup`)")
+		fmt.Println("  not installed (run `shoo setup`)")
 	}
 
 	fmt.Println("Other websites:")
-	if fi, err := os.Stat(filepath.Join(dir, sites.BlocklistFile)); err != nil {
-		fmt.Println("  no ad-domain list (run `ytblock update-lists`)")
+	if set.Sites == sitesOff {
+		fmt.Println("  off (YouTube only; change with `shoo setup`)")
+	} else if fi, err := os.Stat(filepath.Join(dir, sites.BlocklistFile)); err != nil {
+		fmt.Println("  no ad-domain list (run `shoo update-lists`)")
 	} else if l, err := sites.Load(dir); err == nil {
 		fmt.Printf("  %d ad domains, list updated %s\n", l.Len(), fi.ModTime().Format("2006-01-02 15:04"))
 	}
@@ -217,7 +224,7 @@ func status(dir, addr, pacURL string) {
 		case on && cur == pacURL:
 			fmt.Printf("  %-24s on\n", svc)
 		case on:
-			fmt.Printf("  %-24s not ytblock (another PAC file is on: %s)\n", svc, cur)
+			fmt.Printf("  %-24s not shoo (another PAC file is on: %s)\n", svc, cur)
 		default:
 			fmt.Printf("  %-24s off\n", svc)
 		}
@@ -228,4 +235,9 @@ func run(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	return cmd.Run()
+}
+
+func fileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }

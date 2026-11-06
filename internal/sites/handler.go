@@ -65,7 +65,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if host := targetHost(r); host != "" && h.list.Load().Blocked(host) {
 		h.blocked.Add(1)
 		h.Log.Printf("blocked %s", host)
-		http.Error(w, "blocked by ytblock", http.StatusForbidden)
+		http.Error(w, "blocked by shoo", http.StatusForbidden)
 		return
 	}
 	h.YouTube.ServeHTTP(w, r)

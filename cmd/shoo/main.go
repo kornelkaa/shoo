@@ -1,16 +1,18 @@
-// Command ytblock removes ads in Safari on macOS. YouTube ads are removed by
+// Command shoo removes ads in Safari on macOS. YouTube ads are removed by
 // editing YouTube's responses in a local proxy (internal/proxy); ads on other
 // sites are blocked by refusing known ad domains (internal/sites).
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -27,27 +29,29 @@ const defaultAddr = "127.0.0.1:8899"
 // version is set at build time: -ldflags "-X main.version=0.1.0".
 var version = "dev"
 
-const usage = `ytblock - block ads in Safari on macOS
+const usage = `shoo - block ads in Safari on macOS
 
 Usage:
-  ytblock setup                turn everything on (asks for your password twice)
-  ytblock uninstall [-purge]   turn everything off (-purge: also delete settings and lists)
-  ytblock status               show what's set up
+  shoo setup [-yes]         set up shoo: asks a few questions, then your password
+                               (-yes: no questions, use the saved or default choices)
+  shoo uninstall [-purge]   turn everything off (-purge: also delete settings and lists)
+  shoo status               show what's set up
+  shoo start / stop         start or stop the background service
 
-  ytblock block DOMAIN         always block a domain on other websites
-  ytblock allow DOMAIN         never block a domain (if a site breaks)
-  ytblock update-lists [-level strict|balanced|max]
+  shoo block DOMAIN         always block a domain on other websites
+  shoo allow DOMAIN         never block a domain (if a site breaks)
+  shoo update-lists [-level strict|balanced|max]
                                download ad-domain lists now (also refreshed weekly)
                                (strict = default; balanced if sites break; max = most blocking)
-  ytblock version
+  shoo version
 
 Individual steps (setup does these for you):
-  ytblock init-ca [-force]     create this Mac's YouTube-only certificate
-  ytblock trust                trust the certificate (asks for your password)
-  ytblock run [-sites=false]   start the proxy (-sites=false: YouTube only)
-  sudo ytblock enable [-force] turn ytblock on in macOS network settings
-  sudo ytblock disable         turn ytblock off in macOS network settings
-  ytblock untrust              remove the certificate from the keychain
+  shoo init-ca [-force]     create this Mac's YouTube-only certificate
+  shoo trust                trust the certificate (asks for your password)
+  shoo run [-sites=false]   start the proxy (-sites=false: YouTube only)
+  sudo shoo enable [-force] turn shoo on in macOS network settings
+  sudo shoo disable         turn shoo off in macOS network settings
+  shoo untrust              remove the certificate from the keychain
 
 All commands accept -addr (default ` + defaultAddr + `).
 `
@@ -65,6 +69,7 @@ func main() {
 	level := fs.String("level", sites.DefaultLevel, "update-lists: strict, balanced or max")
 	listURLs := fs.String("url", "", "update-lists: comma-separated list URLs (instead of -level)")
 	purge := fs.Bool("purge", false, "uninstall: also delete settings, lists and the log")
+	yes := fs.Bool("yes", false, "setup: don't ask questions")
 	fs.Parse(os.Args[2:])
 	if err := requireLoopback(*addr); err != nil {
 		log.Fatal(err)
@@ -78,15 +83,28 @@ func main() {
 
 	switch cmd {
 	case "setup":
-		err = setup(dir, *addr, pacURL)
+		err = setup(dir, *addr, pacURL, *yes)
+	case "start":
+		if err = loadAgent(); err == nil {
+			if !proxyAnswers(pacURL) {
+				err = startAgent()
+			}
+			if err == nil {
+				fmt.Println("shoo is running.")
+			}
+		}
+	case "stop":
+		exec.Command("launchctl", "bootout", guiDomain()+"/"+agentLabel).Run()
+		fmt.Println("shoo is stopped until `shoo start` (or your next login, if it starts at login).")
+		fmt.Println("Safari connects directly meanwhile: YouTube shows ads, other sites aren't blocked.")
 	case "uninstall":
 		err = uninstall(dir, *addr, pacURL, *purge)
 	case "version", "-version", "--version":
-		fmt.Println("ytblock", version)
+		fmt.Println("shoo", version)
 	case "init-ca":
 		err = certs.Generate(dir, *force)
 		if err == nil {
-			fmt.Printf("Created %s\nNext: ytblock trust\n", filepath.Join(dir, certs.CertFile))
+			fmt.Printf("Created %s\nNext: shoo trust\n", filepath.Join(dir, certs.CertFile))
 		}
 	case "trust":
 		err = trust(dir)
@@ -154,7 +172,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	if err != nil {
 		return err
 	}
-	logger := log.New(os.Stderr, "ytblock: ", log.LstdFlags)
+	logger := log.New(os.Stderr, "shoo: ", log.LstdFlags)
 	p := proxy.New(ca, prune.Default, logger)
 	p.Addr = addr
 	// Next to p: a backup script in YouTube pages that mutes and skips an ad
@@ -169,7 +187,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 			return err
 		}
 		if list.Len() == 0 {
-			logger.Printf("no ad-domain list yet: run `ytblock update-lists` (YouTube blocking works without it)")
+			logger.Printf("no ad-domain list yet: run `shoo update-lists` (YouTube blocking works without it)")
 		}
 		h := sites.NewHandler(p, addr, list, logger)
 		go h.Watch(dir, 30*time.Second)
@@ -183,18 +201,29 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          logger,
 	}
-	logger.Printf("ytblock %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
+	logger.Printf("shoo %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
 }
 
-// dataDir is ~/Library/Application Support/ytblock. Under sudo it is only used
+// dataDir is ~/Library/Application Support/shoo. Under sudo it is only used
 // by commands that don't need it (enable/disable).
 func dataDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "ytblock"), nil
+	dir := filepath.Join(base, "shoo")
+	// shoo used to be called ytblock: move its settings, lists and
+	// certificate over, so the trusted certificate keeps working.
+	old := filepath.Join(base, "ytblock")
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(old); err == nil {
+			if err := os.Rename(old, dir); err != nil {
+				return "", fmt.Errorf("moving %s to %s: %w", old, dir, err)
+			}
+		}
+	}
+	return dir, nil
 }
 
 func requireLoopback(addr string) error {

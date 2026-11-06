@@ -48,7 +48,7 @@ func TestTransportOnlyEditsPages(t *testing.T) {
 		}
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		if got := strings.Contains(string(b), "__ytblockSkip"); got != edited {
+		if got := strings.Contains(string(b), "__shooSkip"); got != edited {
 			t.Errorf("%s: edited=%v, want %v", path, got, edited)
 		}
 		if edited && resp.ContentLength != int64(len(b)) {

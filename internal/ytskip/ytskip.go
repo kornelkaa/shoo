@@ -24,8 +24,8 @@ import (
 // Script runs in YouTube pages. It must not set HTML (YouTube enforces
 // Trusted Types) and only reacts to an ad that is playing.
 const Script = `(function () {
-  if (window.__ytblockSkip) return;
-  window.__ytblockSkip = true;
+  if (window.__shooSkip) return;
+  window.__shooSkip = true;
   var SKIP = '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern';
   var CLOSE = '.ytp-ad-overlay-close-button';
   var inAd = false, wasMuted = false, video = null;

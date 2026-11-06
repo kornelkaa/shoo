@@ -1,10 +1,10 @@
-// Command ytblock-debug runs exactly like `ytblock run`, using the same
+// Command shoo-debug runs exactly like `shoo run`, using the same
 // YouTube and other-site code unchanged, and also records what YouTube sends,
 // to find out how ads get past the blocker.
 //
-// Use it temporarily in place of `ytblock run` (same port), play videos until
+// Use it temporarily in place of `shoo run` (same port), play videos until
 // an ad gets through, then stop it with Ctrl+C. Results are written to
-// ~/Library/Logs/ytblock-debug/<time>/ and stay on this Mac.
+// ~/Library/Logs/shoo-debug/<time>/ and stay on this Mac.
 package main
 
 import (
@@ -31,7 +31,7 @@ import (
 )
 
 // adMarkers are names YouTube uses for ad instructions. Finding one of these
-// in what Safari receives (after ytblock's removal) means an ad can get through.
+// in what Safari receives (after shoo's removal) means an ad can get through.
 var adMarkers = []string{
 	"adPlacements", "playerAds", "adSlots", "adBreakHeartbeatParams",
 	"instreamVideoAdRenderer", "linearAdSequenceRenderer", "adBreakServiceRenderer",
@@ -44,16 +44,16 @@ var adMarkers = []string{
 var adEventPaths = []string{"/api/stats/ads", "/pagead/", "/ptracking", "ad_break", "get_midroll", "/api/stats/qoe?adformat"}
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8899", "listen address (same as ytblock)")
+	addr := flag.String("addr", "127.0.0.1:8899", "listen address (same as shoo)")
 	flag.Parse()
 
 	base, err := os.UserConfigDir()
 	if err != nil {
 		log.Fatal(err)
 	}
-	dataDir := filepath.Join(base, "ytblock")
+	dataDir := filepath.Join(base, "shoo")
 	home, _ := os.UserHomeDir()
-	outDir := filepath.Join(home, "Library", "Logs", "ytblock-debug", time.Now().Format("2006-01-02_15-04-05"))
+	outDir := filepath.Join(home, "Library", "Logs", "shoo-debug", time.Now().Format("2006-01-02_15-04-05"))
 	if err := os.MkdirAll(filepath.Join(outDir, "responses"), 0o700); err != nil {
 		log.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// The YouTube proxy, exactly as ytblock runs it; only its connection to
+	// The YouTube proxy, exactly as shoo runs it; only its connection to
 	// YouTube is wrapped so responses can be recorded.
 	p := proxy.New(ca, prune.Default, events)
 	p.Addr = *addr
@@ -86,18 +86,18 @@ func main() {
 		if r.Method == http.MethodConnect && sites.IsYouTube(hostOnly(r.Host)) {
 			v, _ := connects.LoadOrStore(hostOnly(r.Host), new(int64))
 			n := atomic.AddInt64(v.(*int64), 1)
-			events.Printf("CONNECT  %s (connection #%d through ytblock)", r.Host, n)
+			events.Printf("CONNECT  %s (connection #%d through shoo)", r.Host, n)
 		}
 		h.ServeHTTP(w, r)
 	})
 
-	fmt.Fprintf(os.Stderr, "\nytblock-debug on %s\nRecording to %s\nPlay YouTube videos in Safari until an ad gets through, then press Ctrl+C.\n\n", *addr, outDir)
+	fmt.Fprintf(os.Stderr, "\nshoo-debug on %s\nRecording to %s\nPlay YouTube videos in Safari until an ad gets through, then press Ctrl+C.\n\n", *addr, outDir)
 	srv := &http.Server{Addr: *addr, Handler: top, ReadHeaderTimeout: 30 * time.Second, ErrorLog: events}
 	log.Fatal(srv.ListenAndServe())
 }
 
 // recorder sits between the YouTube proxy and YouTube. It logs every request
-// and checks responses for ad data that ytblock's removal would leave behind.
+// and checks responses for ad data that shoo's removal would leave behind.
 type recorder struct {
 	next  http.RoundTripper
 	rules prune.Rules
@@ -145,7 +145,7 @@ func (rc *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 
-	// What Safari will get: the same removal ytblock does.
+	// What Safari will get: the same removal shoo does.
 	after := body
 	switch {
 	case isJSON:
@@ -156,9 +156,9 @@ func (rc *recorder) RoundTrip(req *http.Request) (*http.Response, error) {
 	before, left := countMarkers(body), countMarkers(after)
 	line += fmt.Sprintf("  %d KB  ad data: %s", len(body)/1024, describe(before))
 	if isJSON || isHTML {
-		line += "  after ytblock: " + describe(left)
+		line += "  after shoo: " + describe(left)
 	} else {
-		line += "  [NOT EDITED by ytblock: " + ctype + "]"
+		line += "  [NOT EDITED by shoo: " + ctype + "]"
 	}
 	if info := playerInfo(after); info != "" {
 		line += "  " + info

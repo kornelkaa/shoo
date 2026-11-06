@@ -178,7 +178,3 @@ and its `.sha256` as a GitHub release. `install.sh` always installs the latest r
 ## License
 
 MIT, see [LICENSE](LICENSE).
-
-## Next steps
-
-- Signed rules file so YouTube rule fixes reach users without reinstalling

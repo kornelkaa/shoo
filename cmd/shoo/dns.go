@@ -32,6 +32,7 @@ import (
 
 	"shoo/internal/dnsblock"
 	"shoo/internal/sites"
+	"shoo/internal/stats"
 )
 
 const (
@@ -87,10 +88,14 @@ func runDNS(dir string) error {
 
 	before, _ := readDNSBefore()
 	ups := &dnsblock.Upstreams{Preferred: manualServers(before)}
+	rec := stats.Open(filepath.Join(dir, stats.DNSFile), logger)
+	go rec.Run(30 * time.Second)
+	saveOnExit(rec)
 	srv := &dnsblock.Server{
-		Blocked:  func(name string) bool { return cur.Load().Blocked(name) },
-		Upstream: ups.Servers,
-		Log:      logger,
+		Blocked:   func(name string) bool { return cur.Load().Blocked(name) },
+		Upstream:  ups.Servers,
+		Log:       logger,
+		OnBlocked: func(name string) { rec.Add(stats.DNS, name) },
 	}
 	logger.Printf("shoo %s DNS on %s: blocking %d ad domains, other lookups go to %v", version, dnsAddr, list.Len(), ups.Servers())
 	errc := make(chan error, 2)

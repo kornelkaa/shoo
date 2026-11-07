@@ -38,6 +38,9 @@ type Server struct {
 	// Timeout per upstream server (default 3s).
 	Timeout time.Duration
 
+	// OnBlocked is called with each blocked name (nil: nothing).
+	OnBlocked func(name string)
+
 	blocked atomic.Int64
 }
 
@@ -111,6 +114,9 @@ func (s *Server) handle(q []byte, network string) []byte {
 	}
 	if name != "" && s.Blocked != nil && s.Blocked(name) {
 		s.blocked.Add(1) // not logged by name: the log would list the sites you visit
+		if s.OnBlocked != nil {
+			s.OnBlocked(name)
+		}
 		return blockedAnswer(q, qtype, qend)
 	}
 	resp, err := s.forward(q, network)

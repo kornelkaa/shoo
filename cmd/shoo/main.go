@@ -16,8 +16,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"shoo/internal/certs"
@@ -27,6 +29,7 @@ import (
 	"shoo/internal/proxy"
 	"shoo/internal/prune"
 	"shoo/internal/sites"
+	"shoo/internal/stats"
 	"shoo/internal/ytskip"
 )
 
@@ -47,6 +50,7 @@ Usage:
                                (-yes: no questions, use the saved or default choices)
   shoo uninstall [-purge]   turn everything off (-purge: also delete settings and lists)
   shoo status               show what's set up
+  shoo stats                charts of what was blocked (today, 24 hours, 30 days)
   shoo start / stop         start or stop the background service
 
   shoo block DOMAIN         always block a domain on other websites
@@ -158,6 +162,8 @@ func main() {
 		err = runDNS(dir)
 	case "status":
 		status(dir, *addr, pacURL)
+	case "stats":
+		err = showStats(dir, *addr)
 	case "update-lists":
 		urls, ok := sites.Levels[*level]
 		if *listURLs != "" {
@@ -222,6 +228,10 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	// A backup script in YouTube pages that mutes and skips an ad only if
 	// one still plays.
 	p.Upstream = &ytskip.Transport{Next: p.Upstream, Log: logger}
+	rec := stats.Open(filepath.Join(dir, stats.ProxyFile), logger)
+	go rec.Run(30 * time.Second)
+	saveOnExit(rec)
+	p.Pruned = func() { rec.Add(stats.YouTube, "") }
 	// Without -sites only YouTube is decrypted (and only YouTube goes
 	// through the proxy, see proxy.PAC).
 	var handler http.Handler = p
@@ -247,6 +257,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 			return err
 		}
 		h := sites.NewHandler(p, addr, list, logger)
+		h.Stats = rec
 		urlRules := netfilter.NewEngine(netRules)
 		if !certs.Constrained(ca.Cert) {
 			p.Decrypt = h.Decrypt
@@ -255,10 +266,11 @@ func runProxy(dir, addr string, sitesOn bool) error {
 				if h.Exempt(hostOnly(host)) {
 					return false
 				}
-				if urlRules.Match(netfilter.FromHTTP(r, scheme, host)) == "" {
+				req := netfilter.FromHTTP(r, scheme, host)
+				if urlRules.Match(req) == "" {
 					return false
 				}
-				h.CountBlocked()
+				h.CountBlocked(urlKind(req.Type), req.Host)
 				return true
 			}
 		}
@@ -294,6 +306,29 @@ func runProxy(dir, addr string, sitesOn bool) error {
 	}
 	logger.Printf("shoo %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
+}
+
+// urlKind is the stats kind of a request blocked by URL.
+func urlKind(typ string) string {
+	switch typ {
+	case "script":
+		return stats.Script
+	case "image", "ping":
+		return stats.Image
+	}
+	return stats.Other
+}
+
+// saveOnExit saves the stats when the process is stopped (launchd sends
+// SIGTERM), then exits.
+func saveOnExit(rec *stats.Recorder) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		rec.Save()
+		os.Exit(0)
+	}()
 }
 
 func hostOnly(hostport string) string {

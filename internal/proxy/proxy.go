@@ -51,6 +51,9 @@ type Proxy struct {
 	// Filter reports whether one request (to scheme://host) should be
 	// blocked by URL, e.g. a single ad script on a site (nil: off).
 	Filter func(r *http.Request, scheme, host string) bool
+	// Pruned is called when ad fields were removed from a YouTube
+	// response (nil: nothing).
+	Pruned func()
 
 	once  sync.Once
 	conns *connListener
@@ -313,6 +316,9 @@ func (p *Proxy) pruneYouTube(resp *http.Response) error {
 	}
 	if n > 0 {
 		p.Log.Printf("%s: removed %d ad fields", path, n)
+		if p.Pruned != nil {
+			p.Pruned()
+		}
 	}
 	setBody(resp, out)
 	return nil

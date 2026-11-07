@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"shoo/internal/local"
+	"shoo/internal/stats"
 )
 
 // Handler sits in front of the proxy. It serves the PAC file and stats and
@@ -25,6 +26,8 @@ type Handler struct {
 	// LogBlocked logs each blocked site. Off normally: the log would become
 	// a record of the sites you visit.
 	LogBlocked bool
+	// Stats counts what was blocked (nil: not counted).
+	Stats *stats.Recorder
 
 	list    atomic.Pointer[List]
 	pac     atomic.Pointer[string]
@@ -49,6 +52,8 @@ func (h *Handler) SetList(l *List) {
 type Stats struct {
 	Blocked int64 `json:"blocked"`
 	Domains int   `json:"domains"`
+	// History is the proxy's saved and current counts (see shoo stats).
+	History *stats.Data `json:"history,omitempty"`
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +66,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		case "/stats":
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(Stats{Blocked: h.blocked.Load(), Domains: h.list.Load().Len()})
+			st := Stats{Blocked: h.blocked.Load(), Domains: h.list.Load().Len()}
+			if h.Stats != nil {
+				d := h.Stats.Snapshot()
+				st.History = &d
+			}
+			json.NewEncoder(w).Encode(st)
 			return
 		}
 	}
@@ -77,6 +87,7 @@ func (h *Handler) Blocked(host string) bool {
 		return false
 	}
 	h.blocked.Add(1)
+	h.Stats.Add(stats.Domain, host)
 	if h.LogBlocked {
 		h.Log.Printf("blocked %s", host)
 	}
@@ -87,8 +98,12 @@ func (h *Handler) Blocked(host string) bool {
 // domains added with `shoo allow`).
 func (h *Handler) Exempt(host string) bool { return h.list.Load().Exempt(host) }
 
-// CountBlocked counts a request blocked some other way (by URL).
-func (h *Handler) CountBlocked() { h.blocked.Add(1) }
+// CountBlocked counts a request to host blocked some other way: kind is
+// stats.Script, stats.Image or stats.Other.
+func (h *Handler) CountBlocked(kind, host string) {
+	h.blocked.Add(1)
+	h.Stats.Add(kind, host)
+}
 
 // Decrypt reports whether the proxy may decrypt host.
 func (h *Handler) Decrypt(host string) bool { return h.list.Load().Decrypt(host) }

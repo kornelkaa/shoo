@@ -99,6 +99,7 @@ Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
 
 ```sh
 shoo status                      # is everything on?
+shoo stats                       # charts: blocked today, last 24 hours, 30 days, by type, top sites
 shoo setup                       # change your choices
 shoo start / shoo stop        # start or stop the background service
 shoo allow example.com           # a site broke: never block it
@@ -118,7 +119,13 @@ Blocking levels, scored on the
 
 Logs: `~/Library/Logs/shoo.log` (`removed N ad fields` on YouTube, list refreshes, errors) and
 `/Library/Logs/shoo-dns.log`. Blocked domains aren't logged by name, so the logs don't become
-a record of the sites you visit (`shoo status` shows the count; `shoo-debug` logs them).
+a record of the sites you visit (`shoo-debug` logs them).
+
+Stats (`shoo stats`): the proxy and the DNS server count what they block, by hour and by type,
+in `stats.json` and `stats-dns.json` in shoo's folder (readable only by you). For the "most
+blocked sites" list they also count which ad and tracker sites were blocked, grouped by site
+(`ads.example.com` → `example.com`), never the pages you visit. Hourly and per-site counts are
+kept for 31 days; `shoo uninstall -purge` deletes them.
 
 Limits: ads served from a site's own domain (Facebook, Instagram, Reddit sponsored posts)
 are only hidden where the lists have a rule for them. Rules that need scripts (uBlock's
@@ -171,6 +178,7 @@ Downloads work for everyone once the repo is public.
   matching (shoo's own code, no uBlock Origin code)
 - `internal/filterlist` – reads list files, skipping `!#if` blocks
 - `internal/sites` – ad-domain list, never-decrypt list, PAC file
+- `internal/stats` – counts of what was blocked, saved every 30 seconds (`shoo stats` draws them)
 - `internal/dnsblock` – the DNS server: 0.0.0.0 for blocked domains, everything else passed on.
   Runs as a system service (`/Library/LaunchDaemons/com.kornelkaa.shoo.dns.plist`) from a
   root-owned copy of shoo in `/Library/Application Support/shoo`; it opens port 53 and then

@@ -228,7 +228,7 @@ func status(dir, addr, pacURL string) {
 	var st sites.Stats
 	if resp, err := c.Get("http://" + addr + "/stats"); err == nil {
 		if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil {
-			fmt.Printf("  %d ad requests blocked by the proxy since it started\n", st.Blocked)
+			fmt.Println("  " + statsSummary(loadStats(dir, addr), time.Now()))
 		} else {
 			fmt.Println("  proxy is running YouTube-only (-sites=false)")
 		}

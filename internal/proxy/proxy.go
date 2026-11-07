@@ -212,6 +212,10 @@ func (p *Proxy) intercept(conn net.Conn, connectHost string) {
 func (p *Proxy) reverseProxy() http.Handler {
 	rp := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
+			// Send the query exactly as the browser wrote it. ReverseProxy
+			// drops parameters containing ";", which breaks URLs like Google
+			// Fonts' family=Roboto:wght@300;400 (YouTube's text font).
+			pr.Out.URL.RawQuery = pr.In.URL.RawQuery
 			pr.Out.URL.Scheme = "https"
 			pr.Out.URL.Host = pr.In.Host
 			pr.Out.Host = pr.In.Host

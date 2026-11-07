@@ -34,6 +34,10 @@ func setupWithURL(t *testing.T) (*http.Client, *int, string) {
 	gotGzip := new(int)
 	fake := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, ctype := playerJSON, "application/json; charset=UTF-8"
+		if r.URL.Path == "/echo-query" {
+			io.WriteString(w, r.URL.RawQuery)
+			return
+		}
 		if r.URL.Path == "/watch" {
 			body, ctype = watchHTML, "text/html; charset=utf-8"
 		}
@@ -113,6 +117,23 @@ func TestPlayerAdsRemovedThroughProxy(t *testing.T) {
 	}
 	if *gotGzip == 0 {
 		t.Error("upstream should still be asked for gzip")
+	}
+}
+
+// Semicolons in the query must reach the site: Google Fonts uses them
+// (family=Roboto:wght@300;400), and dropping them left YouTube without its
+// normal Roboto faces, so all its text showed in italic.
+func TestQueryWithSemicolonsKept(t *testing.T) {
+	c, _ := setup(t)
+	q := "family=Roboto:wght@300;400;500;700&family=YouTube+Sans:wght@300..900&display=swap"
+	resp, err := c.Get("https://www.youtube.com/echo-query?" + q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != q {
+		t.Fatalf("query changed on the way:\n got %s\nwant %s", b, q)
 	}
 }
 

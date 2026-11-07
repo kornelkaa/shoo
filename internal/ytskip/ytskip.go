@@ -79,13 +79,21 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil // the proxy only asks for plain pages; leave anything else alone
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPage+1))
-	resp.Body.Close()
 	if err != nil {
+		resp.Body.Close()
 		return nil, err
 	}
-	if len(body) <= maxPage {
-		body = Inject(body)
+	if len(body) > maxPage {
+		// Too big to edit: pass it through whole, what was read first.
+		rest := resp.Body
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{io.MultiReader(bytes.NewReader(body), rest), rest}
+		return resp, nil
 	}
+	resp.Body.Close()
+	body = Inject(body)
 	resp.Body = io.NopCloser(bytes.NewReader(body))
 	resp.ContentLength = int64(len(body))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))

@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 
+	"shoo/internal/local"
 	"shoo/internal/sites"
 )
 
@@ -25,6 +26,9 @@ type Settings struct {
 	// StartAtLogin runs shoo in the background after login. When false,
 	// it runs until logout and is started again with `shoo start`.
 	StartAtLogin bool `json:"start_at_login"`
+	// Addr is this user's proxy address, chosen by setup (see chooseAddr),
+	// so people sharing a computer each have their own proxy.
+	Addr string `json:"addr,omitempty"`
 }
 
 const sitesOff = "off"
@@ -48,6 +52,11 @@ func loadSettings(dir string) Settings {
 func (s Settings) valid() error {
 	if _, ok := sites.Levels[s.Sites]; !ok && s.Sites != sitesOff {
 		return fmt.Errorf("unknown level %q", s.Sites)
+	}
+	if s.Addr != "" {
+		if err := local.RequireLoopback(s.Addr); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -77,20 +86,7 @@ func currentLevel(dir string) string {
 func askSettings(cur Settings, trusted bool) (s Settings, ok bool, err error) {
 	s, ok = cur, true
 
-	certLine := "• macOS asks for your password once, to trust shoo's certificate.\n" +
-		"  With it shoo decrypts websites on this Mac to remove ads and hide ad\n" +
-		"  boxes. Banks, logins, payments and Apple services are never\n" +
-		"  decrypted, and the certificate can't be used for them. The key\n" +
-		"  never leaves your Mac."
-	if trusted {
-		certLine = "• The certificate is already trusted: no password needed for it\n" +
-			"  (unless it's old or expires soon: then it's replaced, which asks once)."
-	}
-	perms := certLine + "\n" +
-		"• Terminal asks for your password (sudo) once, to point macOS's network\n" +
-		"  settings at shoo: websites go through its proxy, and (if blocking other\n" +
-		"  websites) its DNS service answers ad domains with a dead address.\n" +
-		"• Running in the background needs no password."
+	perms := permissionsText(trusted)
 
 	form := huh.NewForm(
 		huh.NewGroup(

@@ -1,0 +1,4 @@
+# Keep Unix line endings in the repository and in checkouts: install.sh and
+# release.sh must run with sh, and Go's gofmt expects LF.
+* text=auto eol=lf
+*.exe binary

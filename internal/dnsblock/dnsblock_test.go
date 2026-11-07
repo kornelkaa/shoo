@@ -54,13 +54,22 @@ func startServer(t *testing.T, upstream string) string {
 		Log:      log.New(io.Discard, "", 0),
 		Timeout:  time.Second,
 	}
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	l, err := net.Listen("tcp", pc.LocalAddr().String())
-	if err != nil {
-		t.Fatal(err)
+	// UDP and TCP on the same port. Windows hands out UDP ports from blocks it
+	// reserves for TCP (Hyper-V, WSL), so the TCP port is picked first.
+	var pc net.PacketConn
+	var l net.Listener
+	for try := 0; ; try++ {
+		var err error
+		if l, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+			t.Fatal(err)
+		}
+		if pc, err = net.ListenPacket("udp", l.Addr().String()); err == nil {
+			break
+		}
+		l.Close()
+		if try == 20 {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() { pc.Close(); l.Close() })
 	go s.ServeUDP(pc)
@@ -146,13 +155,72 @@ func TestUpstreamUnavailable(t *testing.T) {
 	}
 }
 
+func TestProbeAlwaysBlocked(t *testing.T) {
+	// The probe is answered even with an empty list, and never forwarded.
+	up, got := fakeUpstream(t)
+	s := &Server{
+		Blocked:  func(string) bool { return false },
+		Upstream: func() []string { return []string{up} },
+		Log:      log.New(io.Discard, "", 0),
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	go s.ServeUDP(pc)
+	ips, err := resolver(pc.LocalAddr().String(), "udp").LookupIP(context.Background(), "ip4", ProbeName)
+	if err != nil || len(ips) != 1 || !ips[0].Equal(net.IPv4zero) {
+		t.Errorf("probe = %v, %v; want 0.0.0.0", ips, err)
+	}
+	select {
+	case n := <-got:
+		t.Errorf("the probe reached the upstream: %q", n)
+	default:
+	}
+}
+
+func TestDeadUpstreamTriedLast(t *testing.T) {
+	// The first server takes the query but never answers. After one slow
+	// lookup it moves to the back, so the next lookups are fast.
+	silent, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { silent.Close() })
+	up, _ := fakeUpstream(t)
+	s := &Server{
+		Upstream: func() []string { return []string{silent.LocalAddr().String(), up} },
+		Log:      log.New(io.Discard, "", 0),
+		Timeout:  300 * time.Millisecond,
+	}
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	go s.ServeUDP(pc)
+	r := resolver(pc.LocalAddr().String(), "udp")
+	for i, name := range []string{"one.example.com", "two.example.com"} {
+		start := time.Now()
+		ips, err := r.LookupIP(context.Background(), "ip4", name)
+		took := time.Since(start)
+		if err != nil || len(ips) != 1 || !ips[0].Equal(net.IPv4(1, 2, 3, 4)) {
+			t.Fatalf("%s = %v, %v", name, ips, err)
+		}
+		if i == 1 && took >= 300*time.Millisecond {
+			t.Errorf("second lookup took %v: the dead server was tried first again", took)
+		}
+	}
+}
+
 func TestUpstreams(t *testing.T) {
 	u := &Upstreams{
-		Preferred: []string{"9.9.9.9", "127.0.0.1"},
-		Lookup:    func() []string { return []string{"192.168.1.1", "9.9.9.9", "::1", "fe80::1"} },
+		Preferred: func() []string { return []string{"9.9.9.9", "127.0.0.1"} },
+		Lookup:    func() []string { return []string{"192.168.1.1", "9.9.9.9", "::1", "fe80::1", "2001:db8::53"} },
 	}
 	got := strings.Join(u.Servers(), ",")
-	if got != "9.9.9.9:53,192.168.1.1:53,[fe80::1]:53" {
+	if got != "9.9.9.9:53,192.168.1.1:53,[2001:db8::53]:53" {
 		t.Errorf("servers = %s", got)
 	}
 	u = &Upstreams{Lookup: func() []string { return []string{"127.0.0.1"} }}

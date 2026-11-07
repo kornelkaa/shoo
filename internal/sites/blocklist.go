@@ -33,7 +33,7 @@ var exclusionsTxt string
 
 // Exclusions are the built-in sites that are never decrypted.
 func Exclusions() []string {
-	d, _ := ParseHosts(strings.NewReader(exclusionsTxt))
+	d, _ := ParseHosts(strings.NewReader(exclusionsTxt + "\n" + platformExclusions))
 	return d
 }
 

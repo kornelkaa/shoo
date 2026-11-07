@@ -1,4 +1,4 @@
-// Command shoo removes ads in Safari on macOS. A
+// Command shoo removes ads in Safari on macOS and in browsers on Windows. A
 // local proxy (internal/proxy) decrypts websites, removes YouTube's ad data,
 // answers requests to ad domains itself, and hides the boxes ads leave
 // behind with EasyList's element-hiding rules (internal/cosmetic). A local
@@ -11,12 +11,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -32,15 +33,18 @@ import (
 
 const defaultAddr = "127.0.0.1:8899"
 
-// pacVersion is part of the PAC file's address. macOS keeps using a PAC
-// file it already downloaded until its address changes, so this goes up
+// pacVersion is part of the PAC file's address. Systems keep using a PAC
+// file they already downloaded until its address changes, so this goes up
 // whenever the PAC file's routing changes (2: every site through the proxy).
 const pacVersion = "2"
+
+// pacURLFor is the address of the PAC file served by the proxy at addr.
+func pacURLFor(addr string) string { return "http://" + addr + "/proxy.pac?v=" + pacVersion }
 
 // version is set at build time: -ldflags "-X main.version=0.1.0".
 var version = "dev"
 
-const usage = `shoo - block ads in Safari on macOS
+var usage = `shoo - block ads on ` + osName + `
 
 Usage:
   shoo setup [-yes]         set up shoo: asks a few questions, then your password
@@ -59,18 +63,12 @@ Usage:
   shoo version
 
 Individual steps (setup does these for you):
-  shoo init-ca [-force]     create this Mac's YouTube-only certificate
+  shoo init-ca [-force]     create this ` + computerName + `'s certificate
   shoo trust                trust the certificate (asks for your password)
   shoo run [-sites=false]   start the proxy (-sites=false: YouTube only)
-  sudo shoo enable [-force] [-dns -data DIR]
-                            turn shoo on in macOS network settings
-                               (-dns: also install the ad-blocking DNS service
-                               for the shoo folder DIR and use it as DNS)
-  sudo shoo disable         turn shoo off in macOS network settings (also DNS)
-  sudo shoo disable-dns     only remove the DNS service and restore DNS
-  shoo untrust              remove the certificate from the keychain
+` + usageSteps + `  shoo untrust              remove the certificate from the ` + certStore + `
 
-All commands accept -addr (default ` + defaultAddr + `).
+All commands accept -addr (default: the address setup chose, or ` + defaultAddr + `).
 `
 
 func main() {
@@ -80,7 +78,7 @@ func main() {
 	}
 	cmd := os.Args[1]
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
-	addr := fs.String("addr", defaultAddr, "proxy listen address (loopback only)")
+	addr := fs.String("addr", "", "proxy listen address (loopback only; default: the one setup chose)")
 	force := fs.Bool("force", false, "init-ca: replace existing CA; enable: replace another PAC setting")
 	sitesOn := fs.Bool("sites", true, "run: also block ad domains on other websites")
 	level := fs.String("level", sites.DefaultLevel, "update-lists: strict, balanced or max")
@@ -89,37 +87,52 @@ func main() {
 	yes := fs.Bool("yes", false, "setup: don't ask questions")
 	dnsOn := fs.Bool("dns", false, "enable: also turn on the ad-blocking DNS service")
 	dataFlag := fs.String("data", "", "enable -dns, dns: shoo's data folder")
+	logFlag := fs.String("log", "", "run: write the log to this file")
+	consolePID := fs.Int("console", 0, "internal: print in this process's terminal")
 	fs.Parse(os.Args[2:])
-	if err := local.RequireLoopback(*addr); err != nil {
-		log.Fatal(err)
-	}
-	pacURL := "http://" + *addr + "/proxy.pac?v=" + pacVersion
+	attachConsole(*consolePID)
 
-	// The DNS system service runs without $HOME, so -data comes first.
+	// The DNS system service runs without $HOME, so -data comes first. It
+	// finds its folders by itself (see dnsMain).
 	dir := *dataFlag
 	var err error
-	if dir == "" {
+	if dir == "" && cmd != "dns" {
 		if dir, err = dataDir(); err != nil {
 			log.Fatal(err)
 		}
 	}
 
+	// Each user's proxy has its own port (see chooseAddr), saved by setup.
+	addrGiven := *addr != ""
+	if !addrGiven && dir != "" {
+		*addr = loadSettings(dir).Addr
+	}
+	if *addr == "" {
+		*addr = defaultAddr
+	}
+	if err := local.RequireLoopback(*addr); err != nil {
+		log.Fatal(err)
+	}
+	pacURL := pacURLFor(*addr)
+
 	switch cmd {
 	case "setup":
-		err = setup(dir, *addr, pacURL, *yes)
+		err = setup(dir, *addr, addrGiven, *yes)
 	case "start":
 		if err = loadAgent(); err == nil {
 			if !proxyAnswers(pacURL) {
-				err = startAgent()
+				if err = startAgent(); err == nil {
+					logFile, _ := logPath()
+					err = waitForProxy(pacURL, logFile)
+				}
 			}
 			if err == nil {
 				fmt.Println("shoo is running.")
 			}
 		}
 	case "stop":
-		exec.Command("launchctl", "bootout", guiDomain()+"/"+agentLabel).Run()
-		fmt.Println("shoo is stopped until `shoo start` (or your next login, if it starts at login).")
-		fmt.Println("Meanwhile YouTube shows ads. Ad domains on other sites stay blocked (DNS keeps running).")
+		stopAgent()
+		fmt.Println(stopNote)
 	case "uninstall":
 		err = uninstall(dir, *addr, pacURL, *purge)
 	case "version", "-version", "--version":
@@ -137,25 +150,23 @@ func main() {
 	case "untrust":
 		err = untrust(dir)
 		if err == nil {
-			fmt.Println("Certificate removed from keychain.")
+			fmt.Println("Certificate removed from the " + certStore + ".")
 		}
 	case "enable":
-		err = enable(pacURL, *force)
-		if err == nil && *dnsOn {
-			var exe string
-			if exe, err = os.Executable(); err == nil {
-				err = enableDNS(exe, dir)
-			}
-		}
+		err = cmdEnable(dir, pacURL, *force, *dnsOn)
 	case "disable":
-		err = disable(pacURL)
-		if dnsErr := disableDNS(); err == nil {
-			err = dnsErr
+		err = cmdDisable(dir, pacURL)
+	case "enable-dns":
+		var exe string
+		if exe, err = os.Executable(); err == nil {
+			err = enableDNS(exe, dir)
 		}
+	case "remove-program": // internal: uninstall's admin step
+		err = removeProgram(dir, *dnsOn, *consolePID)
 	case "disable-dns":
-		err = disableDNS()
+		err = disableDNS(dir)
 	case "dns":
-		err = runDNS(dir)
+		err = dnsMain(dir)
 	case "status":
 		status(dir, *addr, pacURL)
 	case "update-lists":
@@ -179,7 +190,19 @@ func main() {
 	case "block", "allow", "skip":
 		err = addDomain(dir, cmd, fs.Arg(0))
 	case "run":
-		err = runProxy(dir, *addr, *sitesOn)
+		var out io.Writer = os.Stderr
+		if *logFlag != "" {
+			f, ferr := openLog(*logFlag)
+			if ferr != nil {
+				log.Fatal(ferr)
+			}
+			defer f.Close()
+			out = f
+			// The background service has no terminal: a fatal error (port
+			// in use, certificate missing) must reach the log too.
+			log.SetOutput(f)
+		}
+		err = runProxy(dir, *addr, *sitesOn, out)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -207,16 +230,37 @@ func addDomain(dir, cmd, arg string) error {
 	if err := sites.AddDomain(dir, file, d); err != nil {
 		return err
 	}
-	fmt.Printf("Added %s to %s. A running proxy picks it up within a minute; reopen Safari if it doesn't.\n", d, file)
+	fmt.Printf("Added %s to %s. A running proxy picks it up within a minute; %s.\n", d, file, reopenBrief)
 	return nil
 }
 
-func runProxy(dir, addr string, sitesOn bool) error {
+// maxLogBytes: a log bigger than this when shoo starts is moved to
+// <log>.old (replacing the previous one), so it can't grow without end.
+const maxLogBytes = 10 << 20
+
+// openLog opens the log for appending. A crash report goes there too: shoo runs
+// without a terminal on Windows, and it would otherwise be lost.
+func openLog(path string) (*os.File, error) {
+	if fi, err := os.Stat(path); err == nil && fi.Size() > maxLogBytes {
+		os.Rename(path, path+".old")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := debug.SetCrashOutput(f, debug.CrashOptions{}); err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+func runProxy(dir, addr string, sitesOn bool, out io.Writer) error {
 	ca, err := certs.Load(dir)
 	if err != nil {
 		return err
 	}
-	logger := log.New(os.Stderr, "shoo: ", log.LstdFlags)
+	logger := log.New(out, "shoo: ", log.LstdFlags)
 	p := proxy.New(ca, prune.Default, logger)
 	p.Addr = addr
 	// A backup script in YouTube pages that mutes and skips an ad only if
@@ -292,6 +336,7 @@ func runProxy(dir, addr string, sitesOn bool) error {
 		ReadHeaderTimeout: 30 * time.Second,
 		ErrorLog:          logger,
 	}
+	notePID(dir)
 	logger.Printf("shoo %s listening on %s (PAC file: http://%s/proxy.pac)", version, addr, addr)
 	return srv.ListenAndServe()
 }
@@ -330,10 +375,10 @@ func watchFile(path string, every time.Duration, changed func()) {
 	}
 }
 
-// dataDir is ~/Library/Application Support/shoo. Under sudo it is only used
-// by commands that don't need it (enable/disable).
+// dataDir is shoo's folder in dataBase. Under sudo it is only used by commands
+// that don't need it (enable/disable).
 func dataDir() (string, error) {
-	base, err := os.UserConfigDir()
+	base, err := dataBase()
 	if err != nil {
 		return "", err
 	}

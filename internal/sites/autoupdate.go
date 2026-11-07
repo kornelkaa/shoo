@@ -44,6 +44,7 @@ func AutoUpdate(ctx context.Context, dir string, maxAge time.Duration, logger *l
 			return
 		case <-timer.C:
 		}
+		next := 24 * time.Hour
 		if needsUpdate(dir, maxAge) {
 			urls := Sources(dir)
 			if len(urls) == 0 {
@@ -51,13 +52,18 @@ func AutoUpdate(ctx context.Context, dir string, maxAge time.Duration, logger *l
 			}
 			if n, err := Update(ctx, dir, urls); err != nil {
 				logger.Printf("refreshing ad-domain lists failed (keeping the old ones): %v", err)
+				next = retryAfter
 			} else {
 				logger.Printf("refreshed ad-domain lists: %d domains", n)
 			}
 		}
-		timer.Reset(24 * time.Hour)
+		timer.Reset(next)
 	}
 }
+
+// retryAfter is how soon a failed refresh is tried again (offline at login,
+// say), instead of waiting a whole day.
+const retryAfter = time.Hour
 
 func needsUpdate(dir string, maxAge time.Duration) bool {
 	fi, err := os.Stat(filepath.Join(dir, BlocklistFile))

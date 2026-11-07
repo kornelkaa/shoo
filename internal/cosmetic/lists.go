@@ -134,15 +134,17 @@ func AutoUpdate(ctx context.Context, dir string, maxAge time.Duration, logger *l
 			return
 		case <-timer.C:
 		}
+		next := 24 * time.Hour
 		fi, err := os.Stat(filepath.Join(dir, ListFile))
 		if err != nil || time.Since(fi.ModTime()) > maxAge || !Current(dir) {
 			if n, err := Update(ctx, dir); err != nil {
 				logger.Printf("refreshing element-hiding lists failed (keeping the old ones): %v", err)
+				next = time.Hour // offline at login, say: don't wait a whole day
 			} else if r, err := Load(dir); err == nil {
 				loaded(r)
 				logger.Printf("refreshed element-hiding lists: %d rules", n)
 			}
 		}
-		timer.Reset(24 * time.Hour)
+		timer.Reset(next)
 	}
 }

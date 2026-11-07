@@ -1,7 +1,9 @@
 # shoo
 
-Blocks ads in Safari on macOS, and hides the empty boxes they leave behind. A local proxy
-decrypts the websites you visit, on your Mac, and cleans them up before Safari shows them.
+Blocks ads in Safari on macOS and in browsers on Windows, and hides the empty boxes they
+leave behind. A local proxy decrypts the websites you visit, on your computer, and cleans
+them up before the browser shows them. Most of this README describes macOS; see
+[Windows](#windows) for what differs there.
 
 - **Ad domains** ([StevenBlack](https://github.com/StevenBlack/hosts) +
   [HaGeZi Pro](https://github.com/hagezi/dns-blocklists), ~280k domains): the proxy answers
@@ -123,6 +125,53 @@ that redirect or rewrite requests. Never-decrypted sites aren't cleaned up. Apps
 that use the system proxy settings also go through shoo. Browsers or apps with their own
 encrypted DNS (and iCloud Private Relay) skip the DNS part.
 
+## Windows
+
+Windows support is new. In a normal PowerShell window (not as administrator):
+
+```powershell
+irm https://raw.githubusercontent.com/kornelkaa/shoo/main/install.ps1 | iex
+```
+
+This downloads the latest release, checks its SHA-256 checksum, puts `shoo.exe` in
+`%ProgramFiles%\shoo` (only admins can change it there) and starts `shoo setup`. From source:
+
+```powershell
+go build -o shoo.exe ./cmd/shoo
+./shoo setup
+```
+
+Blocking, the lists and everyday commands are the same as on macOS. It works with browsers
+that follow the Windows proxy settings and certificate store: Edge and Chrome; Firefox
+depends on its own proxy and certificate settings. What's different:
+
+- **The certificate** goes in your own Windows certificate store, after a security warning.
+  Its private key is in `%LOCALAPPDATA%\shoo` and only your account can read it. Windows
+  enforces the excluded names too: a stolen key can't fake a never-decrypted site.
+- **The proxy** is your own setting (Settings > Network & internet > Proxy), so it needs no
+  admin rights. It runs as a hidden scheduled task (`shoo-` and your account's ID).
+- **Several people on one PC** can each use shoo: everyone gets their own proxy (on a
+  port from 18000 up, chosen by setup), certificate, lists and settings. They share the
+  DNS service, which blocks a domain if anyone's lists block it, unless someone ran
+  `shoo allow` for it (DNS can't tell who is asking).
+  It keeps running until the last of them runs `shoo uninstall`.
+- **DNS** runs as a Windows service, `shoo-dns`, under the low-privilege LocalService
+  account. It can read shoo's lists but not the private key. Its copy of shoo, its log
+  (`shoo-dns.log`) and your previous DNS settings are in `%ProgramFiles%\shoo`. Installing
+  it asks for admin rights once.
+- **DNS is set on real Ethernet and Wi-Fi adapters**, for IPv4 and IPv6. VPN and virtual
+  machine adapters are left alone, so their private names keep working. An adapter added
+  later isn't covered until you run `shoo setup` again; `shoo status` shows which are.
+- **Never decrypted** also covers Windows and Microsoft services, app updates and game
+  launchers (`internal/sites/exclusions_windows.txt`). These additions only apply on Windows.
+- `shoo stop` lasts until `shoo start`, including across logins.
+- Antivirus software that scans HTTPS may conflict with shoo. Apps that check for revoked
+  certificates may refuse shoo's, and shoo then stops decrypting them.
+
+Logs: `%LOCALAPPDATA%\shoo\shoo.log` (moved to `shoo.log.old` once it passes 10 MB).
+`shoo uninstall` also removes `%ProgramFiles%\shoo` and its PATH entry, in the same admin
+step as the DNS service, unless someone else on the PC still uses shoo.
+
 ## When an ad gets through
 
 `shoo-debug` runs exactly like `shoo run` (same YouTube and other-site code,
@@ -134,22 +183,27 @@ go build -o shoo-debug ./cmd/shoo-debug
 ./shoo-debug        # stop `shoo run` first; Ctrl+C when done
 ```
 
-Results go to `~/Library/Logs/shoo-debug/<time>/events.log` and stay on your Mac.
+Results go to `~/Library/Logs/shoo-debug/<time>/events.log` (on Windows,
+`%LOCALAPPDATA%\shoo\shoo-debug\<time>\events.log`) and stay on your computer.
 `AD-EVENT` lines are the player reporting an ad; `LEAK?` lines are responses that still
 contain ad data after shoo's removal (saved in `responses/`).
 
 ## Uninstall
 
 ```sh
-shoo uninstall                 # turns everything off; add -purge to also delete settings and lists
-sudo rm /usr/local/bin/shoo    # removes the command itself
+shoo uninstall    # turns everything off and removes shoo itself; add -purge to also delete settings and lists
 ```
+
+The command is removed only if install.sh or install.ps1 put it in place (a copy you built
+yourself stays), and only once nobody else on the computer has shoo set up.
 
 ## Releasing
 
 `scripts/release.sh 0.5.2` (from `main`, everything committed) runs the tests, builds one
-universal `shoo` for Apple Silicon and Intel, tags `v0.5.2` and publishes `shoo-macos.tar.gz`
-and its `.sha256` as a GitHub release. `install.sh` always installs the latest release.
+universal `shoo` for Apple Silicon and Intel and `shoo.exe` for 64-bit Windows, tags `v0.5.2`
+and publishes `shoo-macos.tar.gz`, `shoo-windows-amd64.zip`, `shoo-windows-arm64.zip` and
+their `.sha256` files as a GitHub release. `install.sh` and `install.ps1` always install the
+latest release.
 
 ## Layout
 
@@ -170,10 +224,13 @@ and its `.sha256` as a GitHub release. `install.sh` always installs the latest r
   Runs as a system service (`/Library/LaunchDaemons/com.kornelkaa.shoo.dns.plist`) from a
   root-owned copy of shoo in `/Library/Application Support/shoo`; it opens port 53 and then
   switches to your user
-- `internal/local` – keeps shoo's servers reachable only from this Mac (loopback addresses)
-- `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
+- `internal/local` – keeps shoo's servers reachable only from this computer (loopback addresses)
+- `internal/winacl`, `internal/winnet` – Windows file permissions, network adapters and their DNS settings
+- `cmd/shoo` – CLI and `setup`/`uninstall`. `macos*.go` hold the macOS integration (`security`,
+  `networksetup`, launchd); `*_windows.go` the Windows one (certificate store, proxy setting,
+  scheduled task, DNS service)
 - `cmd/shoo-debug` – the proxy plus YouTube recording, for when an ad gets through
-- `install.sh` – the curl installer; `scripts/release.sh` – publishes a release
+- `install.sh`, `install.ps1` – the installers; `scripts/release.sh` – publishes a release
 
 ## License
 

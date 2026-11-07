@@ -1,4 +1,4 @@
-// Package local keeps shoo's own servers reachable only from this Mac.
+// Package local keeps shoo's own servers reachable only from this computer.
 package local
 
 import (
@@ -29,4 +29,13 @@ func Request(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// NoEmbed stops web pages from using one of shoo's own responses (the PAC
+// file, stats) as a script or anything else they could read: a site could
+// otherwise load the PAC file with <script src> and see which sites the user
+// told shoo never to decrypt.
+func NoEmbed(w http.ResponseWriter) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 }

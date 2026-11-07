@@ -1,0 +1,45 @@
+
+# Windows: system services and updates
+windowsupdate.com
+update.microsoft.com
+delivery.mp.microsoft.com
+dsp.mp.microsoft.com
+displaycatalog.mp.microsoft.com
+licensing.mp.microsoft.com
+storeedgefd.dsx.mp.microsoft.com
+msftconnecttest.com
+msftncsi.com
+smartscreen.microsoft.com
+smartscreen-prod.microsoft.com
+wdcp.microsoft.com
+wd.microsoft.com
+activation.sls.microsoft.com
+validation.sls.microsoft.com
+login.windows.net
+device.login.microsoftonline.com
+
+# Microsoft 365 and OneDrive
+sharepoint.com
+onedrive.com
+onedrive.live.com
+storage.live.com
+officecdn.microsoft.com
+config.office.com
+graph.microsoft.com
+
+# Browser and app updates
+edge.microsoft.com
+msedge.net
+update.googleapis.com
+dl.google.com
+aus5.mozilla.org
+download.mozilla.org
+
+# Games: big downloads, and clients that check certificates themselves
+steamcontent.com
+steamserver.net
+steampowered.com
+epicgames.com
+epicgames.dev
+battle.net
+riotgames.com

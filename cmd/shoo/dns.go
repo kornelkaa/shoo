@@ -1,33 +1,25 @@
 package main
 
 // DNS blocking for other websites. Refusing ad domains in the proxy isn't
-// enough: macOS then connects to them directly. So a small DNS server
+// enough: the system then connects to them directly. So a small DNS server
 // (internal/dnsblock) answers 0.0.0.0 for ad domains and passes every other
-// lookup, YouTube included, to the network's normal DNS servers.
-//
-// The DNS port (53) needs admin rights, so the server runs as a system
-// service (LaunchDaemon). It opens the port as root and then immediately
-// switches to the user who owns shoo's data folder. It keeps running when
-// the proxy is stopped, so DNS never depends on the proxy.
+// lookup, YouTube included, to the network's normal DNS servers. It keeps
+// running when the proxy is stopped, so DNS never depends on the proxy.
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
+	"io"
 	"log"
 	"maps"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"shoo/internal/dnsblock"
@@ -35,185 +27,107 @@ import (
 )
 
 const (
-	dnsLabel     = "com.kornelkaa.shoo.dns"
-	dnsAddr      = "127.0.0.1:53"
-	dnsServerIP  = "127.0.0.1"
-	dnsPlistPath = "/Library/LaunchDaemons/" + dnsLabel + ".plist"
-	// sysDir holds root-owned files: a copy of the shoo binary for the
-	// system service (so it never runs a file the user account can change)
-	// and the DNS settings from before shoo, to put back later.
-	sysDir        = "/Library/Application Support/shoo"
-	dnsLogPath    = "/Library/Logs/shoo-dns.log"
+	dnsAddr       = "127.0.0.1:53"
+	dnsServerIP   = "127.0.0.1"
 	dnsBeforeFile = "dns-before.json"
 )
 
-func dnsBinary() string { return filepath.Join(sysDir, "shoo") }
-
-// runDNS is `shoo dns`, started by the system service as root.
-func runDNS(dir string) error {
-	logger := log.New(os.Stderr, "shoo-dns: ", log.LstdFlags)
-	uid, gid, err := dirOwner(dir)
+// runDNS is `shoo dns`, started by the system service. It blocks for the
+// users whose shoo folders are in dirs: several people can share a computer,
+// which has one DNS setting. Failing to listen on dnsAddr is fatal;
+// dnsExtraAddrs are optional (IPv6 may be switched off).
+func runDNS(dirs []string, out io.Writer) error {
+	logger := log.New(out, "shoo-dns: ", log.LstdFlags)
+	if len(dirs) == 0 {
+		return errors.New("no shoo folders to read lists from")
+	}
+	lowerPrivileges, err := dnsPrivileges(dirs[0])
 	if err != nil {
 		return err
 	}
-	pc, err := net.ListenPacket("udp4", dnsAddr)
+	pc, err := net.ListenPacket("udp", dnsAddr)
 	if err != nil {
 		return fmt.Errorf("DNS port: %w", err)
 	}
-	tl, err := net.Listen("tcp4", dnsAddr)
+	tl, err := net.Listen("tcp", dnsAddr)
 	if err != nil {
 		return fmt.Errorf("DNS port: %w", err)
 	}
-	if os.Geteuid() == 0 {
-		if err := dropPrivileges(uid, gid); err != nil {
-			return err
+	pcs, tls := []net.PacketConn{pc}, []net.Listener{tl}
+	for _, addr := range dnsExtraAddrs {
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			logger.Printf("not listening on %s: %v", addr, err)
+			continue
 		}
+		tl, err := net.Listen("tcp", addr)
+		if err != nil {
+			pc.Close()
+			logger.Printf("not listening on %s: %v", addr, err)
+			continue
+		}
+		pcs, tls = append(pcs, pc), append(tls, tl)
 	}
-
-	list, err := sites.Load(dir)
-	if err != nil {
+	if err := lowerPrivileges(); err != nil {
 		return err
 	}
-	var cur atomic.Pointer[sites.List]
-	cur.Store(list)
-	go sites.WatchFiles(dir, 30*time.Second, func() {
-		if l, err := sites.Load(dir); err != nil {
-			logger.Printf("reloading block list: %v", err)
-		} else {
-			cur.Store(l)
+
+	lists := make([]atomic.Pointer[sites.List], len(dirs))
+	for i, dir := range dirs {
+		lists[i].Store(loadOrEmpty(dir, logger))
+		go sites.WatchFiles(dir, 30*time.Second, func() {
+			l := loadOrEmpty(dir, logger)
+			lists[i].Store(l)
 			logger.Printf("block list reloaded: %d domains", l.Len())
+		})
+	}
+	blocked := func(name string) bool {
+		cur := make([]*sites.List, len(lists))
+		for i := range lists {
+			cur[i] = lists[i].Load()
 		}
-	})
+		return dnsBlocks(cur, name)
+	}
 
-	before, _ := readDNSBefore()
-	ups := &dnsblock.Upstreams{Preferred: manualServers(before)}
+	// Read again on every refresh: on a first install, enableDNS saves the
+	// previous settings only after this server has started.
+	ups := &dnsblock.Upstreams{Preferred: func() []string {
+		before, _ := readDNSBefore()
+		return manualServers(before)
+	}}
 	srv := &dnsblock.Server{
-		Blocked:  func(name string) bool { return cur.Load().Blocked(name) },
+		Blocked:  blocked,
 		Upstream: ups.Servers,
 		Log:      logger,
 	}
-	logger.Printf("shoo %s DNS on %s: blocking %d ad domains, other lookups go to %v", version, dnsAddr, list.Len(), ups.Servers())
-	errc := make(chan error, 2)
-	go func() { errc <- srv.ServeUDP(pc) }()
-	go func() { errc <- srv.ServeTCP(tl) }()
+	logger.Printf("shoo %s DNS on %s for %d user(s), other lookups go to %v", version, dnsAddr, len(dirs), ups.Servers())
+	errc := make(chan error, len(pcs)+len(tls))
+	for _, pc := range pcs {
+		go func() { errc <- srv.ServeUDP(pc) }()
+	}
+	for _, tl := range tls {
+		go func() { errc <- srv.ServeTCP(tl) }()
+	}
 	return <-errc
 }
 
-// dirOwner is the user who owns dir; the DNS server runs as that user.
-func dirOwner(dir string) (uid, gid int, err error) {
-	fi, err := os.Stat(dir)
-	if err != nil {
-		return 0, 0, err
-	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	if !ok {
-		return 0, 0, errors.New("can't read the owner of " + dir)
-	}
-	if st.Uid == 0 {
-		return 0, 0, fmt.Errorf("%s belongs to root; it should be in your home folder", dir)
-	}
-	return int(st.Uid), int(st.Gid), nil
-}
+// dnsAnswers checks that shoo's DNS server is running and answering. It
+// asks for dnsblock.ProbeName, which the server always blocks, so the answer
+// doesn't depend on the lists (not downloaded yet, or a domain allowed).
+func dnsAnswers() bool { return dnsAnswersAt(dnsAddr) }
 
-func dropPrivileges(uid, gid int) error {
-	if err := syscall.Setgroups([]int{gid}); err != nil {
-		return fmt.Errorf("dropping admin rights: %w", err)
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return fmt.Errorf("dropping admin rights: %w", err)
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return fmt.Errorf("dropping admin rights: %w", err)
-	}
-	if syscall.Setuid(0) == nil {
-		return errors.New("dropping admin rights failed")
-	}
-	return nil
-}
-
-func dnsPlist(dir string) string {
-	e := html.EscapeString
-	return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>Label</key>
-	<string>` + dnsLabel + `</string>
-	<key>ProgramArguments</key>
-	<array>
-		<string>` + e(dnsBinary()) + `</string>
-		<string>dns</string>
-		<string>-data</string>
-		<string>` + e(dir) + `</string>
-	</array>
-	<key>RunAtLoad</key>
-	<true/>
-	<key>KeepAlive</key>
-	<true/>
-	<key>ThrottleInterval</key>
-	<integer>5</integer>
-	<key>StandardOutPath</key>
-	<string>` + e(dnsLogPath) + `</string>
-	<key>StandardErrorPath</key>
-	<string>` + e(dnsLogPath) + `</string>
-</dict>
-</plist>
-`
-}
-
-// dnsAnswers checks that shoo's DNS server is running and blocking.
-func dnsAnswers() bool {
+func dnsAnswersAt(addr string) bool {
 	r := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			var d net.Dialer
-			return d.DialContext(ctx, network, dnsAddr)
+			return d.DialContext(ctx, network, addr)
 		},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	ips, err := r.LookupIP(ctx, "ip4", "doubleclick.net")
+	ips, err := r.LookupIP(ctx, "ip4", dnsblock.ProbeName)
 	return err == nil && len(ips) == 1 && ips[0].Equal(net.IPv4zero)
-}
-
-func getDNSServers(svc string) []string {
-	out, _ := exec.Command("networksetup", "-getdnsservers", svc).Output()
-	var ips []string
-	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if net.ParseIP(strings.TrimSpace(l)) != nil {
-			ips = append(ips, strings.TrimSpace(l))
-		}
-	}
-	return ips // empty: the network's automatic (DHCP) DNS
-}
-
-func usesShooDNS(svc string) bool {
-	return slices.Equal(getDNSServers(svc), []string{dnsServerIP})
-}
-
-// dnsEverywhere reports whether every network service uses shoo's DNS.
-func dnsEverywhere() bool {
-	svcs, err := networkServices()
-	if err != nil || len(svcs) == 0 {
-		return false
-	}
-	for _, svc := range svcs {
-		if !usesShooDNS(svc) {
-			return false
-		}
-	}
-	return true
-}
-
-// dnsInstalledFrom reports whether the system service is installed and runs
-// the same shoo binary as exe.
-func dnsInstalledFrom(exe string) bool {
-	if !fileExists(dnsPlistPath) {
-		return false
-	}
-	a, err1 := fileHash(exe)
-	b, err2 := fileHash(dnsBinary())
-	return err1 == nil && err2 == nil && a == b
 }
 
 func fileHash(p string) ([32]byte, error) {
@@ -228,11 +142,22 @@ func fileHash(p string) ([32]byte, error) {
 // shoo (empty list: automatic).
 func readDNSBefore() (map[string][]string, error) {
 	m := map[string][]string{}
-	b, err := os.ReadFile(filepath.Join(sysDir, dnsBeforeFile))
+	b, err := os.ReadFile(filepath.Join(systemDir(), dnsBeforeFile))
 	if err != nil {
 		return m, err
 	}
 	return m, json.Unmarshal(b, &m)
+}
+
+// writeDNSBefore saves what readDNSBefore reads. It replaces the file in one
+// step, so a crash can't leave half of it.
+func writeDNSBefore(m map[string][]string) error {
+	b, _ := json.MarshalIndent(m, "", "  ")
+	path := filepath.Join(systemDir(), dnsBeforeFile)
+	if err := os.WriteFile(path+".tmp", b, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
 }
 
 func manualServers(before map[string][]string) []string {
@@ -243,133 +168,39 @@ func manualServers(before map[string][]string) []string {
 	return out
 }
 
-// enableDNS (root) installs the DNS system service and points every network
-// service's DNS at it. It only switches DNS once the server answers.
-func enableDNS(exe, dir string) error {
-	if os.Geteuid() != 0 {
-		return errors.New("needs admin rights: run `sudo shoo enable -dns -data DIR`")
-	}
-	if _, _, err := dirOwner(dir); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(sysDir, 0o755); err != nil {
-		return err
-	}
-	// Copy the binary to the root-owned folder, replacing it atomically.
-	src, err := os.ReadFile(exe)
-	if err != nil {
-		return err
-	}
-	tmp := dnsBinary() + ".new"
-	if err := os.WriteFile(tmp, src, 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, dnsBinary()); err != nil {
-		return err
-	}
-
-	plist := []byte(dnsPlist(dir))
-	if cur, err := os.ReadFile(dnsPlistPath); err != nil || !bytes.Equal(cur, plist) {
-		if err := os.WriteFile(dnsPlistPath, plist, 0o644); err != nil {
-			return err
-		}
-	}
-	// (Re)start so a new binary or folder takes effect.
-	exec.Command("launchctl", "bootout", "system/"+dnsLabel).Run()
-	var out []byte
-	for i := 0; i < 10; i++ { // bootout finishes in the background
-		out, err = exec.Command("launchctl", "bootstrap", "system", dnsPlistPath).CombinedOutput()
-		if err == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	if err != nil {
-		return fmt.Errorf("starting the DNS service: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	ok := false
-	for i := 0; i < 40 && !ok; i++ {
-		time.Sleep(250 * time.Millisecond)
-		ok = dnsAnswers()
-	}
-	if !ok {
-		return fmt.Errorf("the DNS service didn't start, so DNS settings were left unchanged; see %s", dnsLogPath)
-	}
-
-	svcs, err := networkServices()
-	if err != nil {
-		return err
-	}
-	before, _ := readDNSBefore()
-	for _, svc := range svcs {
-		if usesShooDNS(svc) {
-			fmt.Printf("  %-24s DNS already shoo\n", svc)
-			continue
-		}
-		before[svc] = getDNSServers(svc)
-		if err := run("networksetup", "-setdnsservers", svc, dnsServerIP); err != nil {
-			fmt.Printf("  %-24s DNS not changed: %v\n", svc, err)
-			delete(before, svc)
-			continue
-		}
-		fmt.Printf("  %-24s DNS shoo\n", svc)
-	}
-	flushDNSCache()
-	b, _ := json.MarshalIndent(before, "", "  ")
-	return os.WriteFile(filepath.Join(sysDir, dnsBeforeFile), b, 0o644)
-}
-
-// flushDNSCache makes macOS forget addresses it looked up earlier, so ad
-// domains it already knew are looked up again (root only).
-func flushDNSCache() {
-	exec.Command("/usr/bin/dscacheutil", "-flushcache").Run()
-	exec.Command("/usr/bin/killall", "-HUP", "mDNSResponder").Run()
-}
-
-// disableDNS (root) puts the DNS settings back and removes the DNS service.
-func disableDNS() error {
-	if os.Geteuid() != 0 {
-		return errors.New("needs admin rights: run `sudo shoo disable`")
-	}
-	before, _ := readDNSBefore()
-	svcs, _ := networkServices()
-	for _, svc := range svcs {
-		if !usesShooDNS(svc) {
-			continue
-		}
-		args := append([]string{"-setdnsservers", svc}, before[svc]...)
-		if len(before[svc]) == 0 {
-			args = append(args, "Empty") // back to the network's automatic DNS
-		}
-		if err := run("networksetup", args...); err != nil {
-			fmt.Printf("  %-24s DNS: %v\n", svc, err)
-			continue
-		}
-		fmt.Printf("  %-24s DNS back to normal\n", svc)
-	}
-	flushDNSCache()
-	exec.Command("launchctl", "bootout", "system/"+dnsLabel).Run()
-	var failed []string
-	for _, p := range []string{dnsPlistPath, dnsBinary(), filepath.Join(sysDir, dnsBeforeFile)} {
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-			failed = append(failed, p)
-		}
-	}
-	os.Remove(sysDir) // only if empty
-	if len(failed) > 0 {
-		return fmt.Errorf("could not remove %s", strings.Join(failed, ", "))
-	}
-	return nil
-}
-
 func dnsStatus() {
 	fmt.Println("Ad-domain DNS:")
 	switch {
 	case dnsAnswers():
 		fmt.Println("  running")
-	case fileExists(dnsPlistPath):
-		fmt.Printf("  NOT answering (see %s)\n", dnsLogPath)
+	case dnsInstalled():
+		fmt.Printf("  NOT answering (see %s)\n", dnsLogFile())
 	default:
 		fmt.Println("  not installed (run `shoo setup`)")
 	}
+}
+
+// loadOrEmpty loads one user's lists. A folder that can't be read (its user
+// deleted it, say) blocks nothing, instead of stopping DNS for everyone.
+func loadOrEmpty(dir string, logger *log.Logger) *sites.List {
+	l, err := sites.Load(dir)
+	if err != nil {
+		logger.Printf("reading the lists in %s: %v", dir, err)
+		return sites.NewList(nil, nil)
+	}
+	return l
+}
+
+// dnsBlocks is the DNS server's rule for several users' lists: a domain is
+// blocked if anyone's list blocks it and nobody allowed it. DNS can't tell
+// who is asking, and allowing is how someone fixes a site that broke.
+func dnsBlocks(lists []*sites.List, name string) bool {
+	hit := false
+	for _, l := range lists {
+		if l.Exempt(name) {
+			return false
+		}
+		hit = hit || l.Blocked(name)
+	}
+	return hit
 }

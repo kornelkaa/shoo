@@ -53,6 +53,7 @@ type Stats struct {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !r.URL.IsAbs() && r.Method == http.MethodGet && local.Request(r) {
+		local.NoEmbed(w)
 		switch r.URL.Path {
 		case "/proxy.pac":
 			w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")

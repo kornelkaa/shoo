@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -27,6 +28,18 @@ const (
 	typeAAAA = 28
 	classIN  = 1
 )
+
+// ProbeName is always answered as blocked, whatever the lists say, so shoo
+// can check that the server is up and answering without depending on what
+// the lists contain (they may not be downloaded yet, or the user may have
+// allowed a domain a probe would otherwise use). ".invalid" is reserved: no
+// real name can end in it.
+const ProbeName = "probe.shoo.invalid"
+
+// failCooldown is how long an upstream server that didn't answer is tried
+// last. Without it a dead first server (a DNS server set by hand for another
+// network, say) would hold up every lookup for the whole timeout.
+const failCooldown = 30 * time.Second
 
 // Server answers DNS queries over UDP and TCP.
 type Server struct {
@@ -39,6 +52,7 @@ type Server struct {
 	Timeout time.Duration
 
 	blocked atomic.Int64
+	failed  sync.Map // upstream "ip:53" -> time.Time it last failed
 }
 
 // BlockedCount is the number of queries answered with a block so far.
@@ -109,6 +123,9 @@ func (s *Server) handle(q []byte, network string) []byte {
 	if !ok {
 		return nil
 	}
+	if name == ProbeName {
+		return blockedAnswer(q, qtype, qend)
+	}
 	if name != "" && s.Blocked != nil && s.Blocked(name) {
 		s.blocked.Add(1) // not logged by name: the log would list the sites you visit
 		return blockedAnswer(q, qtype, qend)
@@ -121,21 +138,37 @@ func (s *Server) handle(q []byte, network string) []byte {
 }
 
 // forward sends the query unchanged to the upstream servers, in order,
-// until one answers.
+// until one answers. Servers that failed recently are tried last.
 func (s *Server) forward(q []byte, network string) ([]byte, error) {
 	var ups []string
 	if s.Upstream != nil {
-		ups = s.Upstream()
+		ups = s.order(s.Upstream())
 	}
 	err := errors.New("no upstream DNS servers")
 	for _, up := range ups {
 		var resp []byte
 		resp, err = exchange(network, up, q, s.timeout())
 		if err == nil {
+			s.failed.Delete(up)
 			return resp, nil
 		}
+		s.failed.Store(up, time.Now())
 	}
 	return nil, err
+}
+
+// order puts servers that failed within failCooldown after the others,
+// keeping the order within each group.
+func (s *Server) order(ups []string) []string {
+	var ok, failed []string
+	for _, up := range ups {
+		if t, found := s.failed.Load(up); found && time.Since(t.(time.Time)) < failCooldown {
+			failed = append(failed, up)
+		} else {
+			ok = append(ok, up)
+		}
+	}
+	return append(ok, failed...)
 }
 
 func exchange(network, server string, q []byte, timeout time.Duration) ([]byte, error) {

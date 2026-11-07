@@ -170,6 +170,13 @@ func writePEM(path, typ string, der []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// Before the key goes in: Windows ignores mode.
+	if mode&0o077 == 0 {
+		if err := ownerOnly(tmp); err != nil {
+			f.Close()
+			return err
+		}
+	}
 	if err := pem.Encode(f, &pem.Block{Type: typ, Bytes: der}); err != nil {
 		f.Close()
 		return err

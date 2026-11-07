@@ -66,3 +66,26 @@ func TestTransportOnlyEditsPages(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportPassesBigPagesWhole(t *testing.T) {
+	big := strings.Repeat("x", maxPage+1000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, big)
+	}))
+	defer srv.Close()
+	next := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	}}
+	tr := &Transport{Next: next, Log: log.New(io.Discard, "", 0)}
+	req, _ := http.NewRequest("GET", "http://www.youtube.com/watch", nil)
+	resp, err := tr.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if len(b) != len(big) {
+		t.Errorf("got %d bytes, want all %d", len(b), len(big))
+	}
+}

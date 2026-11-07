@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -126,6 +127,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/proxy.pac" && local.Request(r):
 		w.Header().Set("Content-Type", "application/x-ns-proxy-autoconfig")
 		w.Header().Set("Cache-Control", "no-store")
+		local.NoEmbed(w)
 		io.WriteString(w, PAC(p.Addr))
 	default:
 		http.Error(w, "shoo proxy", http.StatusBadRequest)
@@ -223,6 +225,7 @@ func (p *Proxy) reverseProxy() http.Handler {
 		ModifyResponse: p.modifyResponse,
 		FlushInterval:  -1,
 		ErrorLog:       p.Log,
+		ErrorHandler:   p.proxyError,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Requests always go to the site the connection was opened for,
@@ -294,15 +297,16 @@ func (p *Proxy) pruneYouTube(resp *http.Response) error {
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
-	resp.Body.Close()
 	if err != nil {
+		resp.Body.Close()
 		return err
 	}
 	if len(body) > maxBody {
 		p.Log.Printf("%s: body over %d bytes, passing through", path, maxBody)
-		setBody(resp, body)
+		resp.Body = rejoin(body, resp.Body)
 		return nil
 	}
+	resp.Body.Close()
 
 	var out []byte
 	var n int
@@ -336,6 +340,27 @@ func PAC(addr string) string {
 `, strings.Join(conds, " ||\n      "), addr)
 }
 
+// rejoin puts the part of a body that was already read back in front of
+// the rest, so a body too big to edit passes through whole.
+func rejoin(head []byte, rest io.ReadCloser) io.ReadCloser {
+	return struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), rest), rest}
+}
+
+// proxyError answers a request the site couldn't be reached for. A client
+// that went away (a closed tab, a cancelled fetch) is normal and not logged.
+func (p *Proxy) proxyError(w http.ResponseWriter, r *http.Request, err error) {
+	if !errors.Is(err, context.Canceled) {
+		p.Log.Printf("proxy error: %v", err)
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusBadGateway)
+	fmt.Fprintf(w, "shoo couldn't reach this site: %v\n\nIf it works without shoo, stop decrypting it with:\n  shoo skip %s\n", err, hostOnly(r.Host))
+}
+
 func setBody(resp *http.Response, b []byte) {
 	resp.Body = io.NopCloser(bytes.NewReader(b))
 	resp.ContentLength = int64(len(b))
@@ -352,8 +377,9 @@ func (p *Proxy) plainHTTP() http.Handler {
 			pr.Out.URL = &u
 			pr.Out.Host = pr.In.URL.Host
 		},
-		Transport: p.Upstream,
-		ErrorLog:  p.Log,
+		Transport:    p.Upstream,
+		ErrorLog:     p.Log,
+		ErrorHandler: p.proxyError,
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p.blocked(r.URL.Hostname()) || p.Filter != nil && p.Filter(r, "http", r.URL.Host) {

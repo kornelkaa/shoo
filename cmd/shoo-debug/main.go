@@ -4,11 +4,12 @@
 //
 // Use it temporarily in place of `shoo run` (same port), play videos until
 // an ad gets through, then stop it with Ctrl+C. Results are written to
-// ~/Library/Logs/shoo-debug/<time>/ and stay on this Mac.
+// shoo-debug/<time>/ in the logs folder and stay on this computer.
 package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -45,19 +46,21 @@ var adMarkers = []string{
 var adEventPaths = []string{"/api/stats/ads", "/pagead/", "/ptracking", "ad_break", "get_midroll", "/api/stats/qoe?adformat"}
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:8899", "listen address (same as shoo)")
+	addr := flag.String("addr", "", "listen address (default: the same as shoo)")
 	flag.Parse()
-	if err := local.RequireLoopback(*addr); err != nil {
-		log.Fatal(err)
-	}
 
-	base, err := os.UserConfigDir()
+	base, err := dataBase()
 	if err != nil {
 		log.Fatal(err)
 	}
 	dataDir := filepath.Join(base, "shoo")
-	home, _ := os.UserHomeDir()
-	outDir := filepath.Join(home, "Library", "Logs", "shoo-debug", time.Now().Format("2006-01-02_15-04-05"))
+	if *addr == "" {
+		*addr = shooAddr(dataDir)
+	}
+	if err := local.RequireLoopback(*addr); err != nil {
+		log.Fatal(err)
+	}
+	outDir := filepath.Join(logsDir(dataDir), "shoo-debug", time.Now().Format("2006-01-02_15-04-05"))
 	if err := os.MkdirAll(filepath.Join(outDir, "responses"), 0o700); err != nil {
 		log.Fatal(err)
 	}
@@ -258,4 +261,16 @@ func hostOnly(hostport string) string {
 		return hostport[:i]
 	}
 	return hostport
+}
+
+// shooAddr is the proxy address `shoo setup` chose (each user on a computer
+// has their own), or shoo's usual one.
+func shooAddr(dataDir string) string {
+	var s struct {
+		Addr string `json:"addr"`
+	}
+	if b, err := os.ReadFile(filepath.Join(dataDir, "settings.json")); err == nil && json.Unmarshal(b, &s) == nil && s.Addr != "" {
+		return s.Addr
+	}
+	return "127.0.0.1:8899"
 }

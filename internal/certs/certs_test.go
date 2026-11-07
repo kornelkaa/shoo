@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"fmt"
 	"math/big"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -76,13 +75,7 @@ func TestKeyFilePermissions(t *testing.T) {
 	if err := Generate(dir, false, testExcluded); err != nil {
 		t.Fatal(err)
 	}
-	fi, err := os.Stat(filepath.Join(dir, KeyFile))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode().Perm() != 0o600 {
-		t.Errorf("key mode = %v, want 0600", fi.Mode().Perm())
-	}
+	checkKeyPrivate(t, filepath.Join(dir, KeyFile))
 	if err := Generate(dir, false, testExcluded); err == nil {
 		t.Error("second Generate without force should fail")
 	}

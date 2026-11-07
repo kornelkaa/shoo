@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -157,5 +158,58 @@ func TestPACFile(t *testing.T) {
 	}
 	if strings.Contains(s, "googlevideo") {
 		t.Error("video stream must not be proxied")
+	}
+}
+
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("dial tcp: connection refused")
+}
+
+func TestUnreachableSiteExplains(t *testing.T) {
+	dir := t.TempDir()
+	if err := certs.Generate(dir, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := certs.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logged strings.Builder
+	p := New(ca, prune.Default, log.New(&logged, "", 0))
+	p.Upstream = failingTransport{}
+	ps := httptest.NewServer(p)
+	defer ps.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	proxyURL, _ := url.Parse(ps.URL)
+	c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: pool}}}
+	resp, err := c.Get("https://www.youtube.com/watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(b), "shoo skip www.youtube.com") {
+		t.Errorf("got %d %q", resp.StatusCode, b)
+	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("error page can be sniffed as HTML")
+	}
+	if !strings.Contains(logged.String(), "connection refused") {
+		t.Errorf("error not logged: %q", logged.String())
+	}
+}
+
+func TestPACNotEmbeddable(t *testing.T) {
+	_, _, base := setupWithURL(t)
+	resp, err := http.Get(base + "/proxy.pac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" || resp.Header.Get("Cross-Origin-Resource-Policy") != "same-origin" {
+		t.Errorf("PAC headers = %v", resp.Header)
 	}
 }

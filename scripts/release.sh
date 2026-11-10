@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds shoo for Apple Silicon and Intel Macs (one universal file) and
-# publishes it as a GitHub release, which install.sh downloads.
+# Builds shoo for Apple Silicon and Intel Macs (one universal file) and for
+# Linux (amd64, arm64), and publishes them as a GitHub release, which
+# install.sh downloads.
 # Usage: scripts/release.sh 0.2.1   (from main, with everything committed)
 # Downloads work for everyone only when the repo is public.
 set -eu
@@ -14,6 +15,7 @@ ASSET="shoo-macos.tar.gz"
 [ -z "$(git status --porcelain)" ] || { echo "Commit your changes first." >&2; exit 1; }
 go vet ./...
 go test ./...
+GOOS=linux go vet ./...
 
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
@@ -26,10 +28,22 @@ lipo -create -output "$out/shoo" "$out/shoo-arm64" "$out/shoo-amd64"
 tar -czf "$out/$ASSET" -C "$out" shoo
 (cd "$out" && shasum -a 256 "$ASSET" > "$ASSET.sha256")
 cat "$out/$ASSET.sha256"
+assets="$out/$ASSET $out/$ASSET.sha256"
+
+for arch in amd64 arm64; do
+  linux="shoo-linux-$arch.tar.gz"
+  mkdir -p "$out/linux-$arch"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath \
+    -ldflags "-s -w -X main.version=$VERSION" -o "$out/linux-$arch/shoo" ./cmd/shoo
+  tar -czf "$out/$linux" -C "$out/linux-$arch" shoo
+  (cd "$out" && shasum -a 256 "$linux" > "$linux.sha256")
+  cat "$out/$linux.sha256"
+  assets="$assets $out/$linux $out/$linux.sha256"
+done
 
 git tag -a "$TAG" -m "shoo $TAG"
 git push origin "$TAG"
-gh release create "$TAG" --repo "$REPO" --title "shoo $TAG" --generate-notes \
-  "$out/$ASSET" "$out/$ASSET.sha256"
+# shellcheck disable=SC2086 # $assets is a list of paths without spaces
+gh release create "$TAG" --repo "$REPO" --title "shoo $TAG" --generate-notes $assets
 echo "Released $TAG. Install with:"
 echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh"

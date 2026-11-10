@@ -4,7 +4,8 @@
 //
 // Use it temporarily in place of `shoo run` (same port), play videos until
 // an ad gets through, then stop it with Ctrl+C. Results are written to
-// ~/Library/Logs/shoo-debug/<time>/ and stay on this Mac.
+// ~/Library/Logs/shoo-debug/<time>/ (macOS) or ~/.local/state/shoo-debug/<time>/
+// (Linux) and stay on this computer.
 package main
 
 import (
@@ -56,8 +57,7 @@ func main() {
 		log.Fatal(err)
 	}
 	dataDir := filepath.Join(base, "shoo")
-	home, _ := os.UserHomeDir()
-	outDir := filepath.Join(home, "Library", "Logs", "shoo-debug", time.Now().Format("2006-01-02_15-04-05"))
+	outDir := filepath.Join(logsDir(), "shoo-debug", time.Now().Format("2006-01-02_15-04-05"))
 	if err := os.MkdirAll(filepath.Join(outDir, "responses"), 0o700); err != nil {
 		log.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func main() {
 		h.ServeHTTP(w, r)
 	})
 
-	fmt.Fprintf(os.Stderr, "\nshoo-debug on %s\nRecording to %s\nPlay YouTube videos in Safari until an ad gets through, then press Ctrl+C.\n\n", *addr, outDir)
+	fmt.Fprintf(os.Stderr, "\nshoo-debug on %s\nRecording to %s\nPlay YouTube videos in your browser until an ad gets through, then press Ctrl+C.\n\n", *addr, outDir)
 	srv := &http.Server{Addr: *addr, Handler: top, ReadHeaderTimeout: 30 * time.Second, ErrorLog: events}
 	log.Fatal(srv.ListenAndServe())
 }

@@ -1,26 +1,40 @@
+//go:build darwin
+
 package main
 
 // macOS system integration: Keychain trust and network proxy settings.
 
 import (
 	"crypto/sha1"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"shoo/internal/certs"
-	"shoo/internal/cosmetic"
-	"shoo/internal/netfilter"
-	"shoo/internal/sites"
 )
+
+const (
+	osName       = "macOS"
+	computerName = "Mac"
+	reopenHint   = "Quit Safari (⌘Q) and open it again."
+	reopenBrief  = "reopen Safari if it doesn't"
+	trustPrompt  = "macOS will ask for your password"
+	stopNote     = "shoo is stopped until `shoo start` (or your next login, if it starts at login).\nMeanwhile YouTube shows ads. Ad domains on other sites stay blocked (DNS keeps running)."
+	certStore    = "keychain"
+	disableHint  = "sudo shoo disable"
+)
+
+const usageSteps = `  sudo shoo enable [-force] [-dns -data DIR]
+                            turn shoo on in macOS network settings
+                               (-dns: also install the ad-blocking DNS service
+                               for the shoo folder DIR and use it as DNS)
+  sudo shoo disable         turn shoo off in macOS network settings (also DNS)
+  sudo shoo disable-dns     only remove the DNS service and restore DNS
+`
 
 func loginKeychain() (string, error) {
 	home, err := os.UserHomeDir()
@@ -92,6 +106,9 @@ func isTrusted(dir string) (bool, error) {
 	return err == nil, err
 }
 
+// trustNotes adds details to the certificate part of `shoo status`.
+func trustNotes(string) []string { return nil }
+
 // networkServices lists enabled network services (Wi-Fi, Ethernet, ...).
 func networkServices() ([]string, error) {
 	out, err := exec.Command("networksetup", "-listallnetworkservices").Output()
@@ -120,6 +137,21 @@ func autoProxy(svc string) (url string, enabled bool) {
 		}
 	}
 	return url, enabled
+}
+
+// enabledEverywhere reports whether every network service already uses
+// pacURL, so the sudo step can be skipped.
+func enabledEverywhere(pacURL string) bool {
+	svcs, err := networkServices()
+	if err != nil || len(svcs) == 0 {
+		return false
+	}
+	for _, svc := range svcs {
+		if cur, on := autoProxy(svc); !on || cur != pacURL {
+			return false
+		}
+	}
+	return true
 }
 
 // enable points every network service at our PAC file. It won't replace a
@@ -168,77 +200,68 @@ func disable(pacURL string) error {
 	return nil
 }
 
-func status(dir, addr, pacURL string) {
-	fmt.Println("Certificate:")
-	if t, err := isTrusted(dir); err != nil {
-		fmt.Println("  missing:", err)
-	} else if t && caConstrained(dir) {
-		fmt.Println("  trusted, but YouTube only (run `shoo setup` to hide ads on other websites)")
-	} else if t {
-		fmt.Println("  trusted")
-		if ca, err := certs.Load(dir); err == nil {
-			fmt.Printf("  valid until %s\n", ca.Cert.NotAfter.Format("2006-01-02"))
-			if r := certs.ReplaceReason(ca.Cert, sites.Exclusions(), loadSettings(dir).Sites != sitesOff); r != "" {
-				fmt.Printf("  should be replaced (%s): run `shoo setup`\n", r)
-			}
+// cmdEnable is `sudo shoo enable [-force] [-dns -data DIR]`.
+func cmdEnable(dir, pacURL string, force, dnsOn bool) error {
+	if err := enable(pacURL, force); err != nil || !dnsOn {
+		return err
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	return enableDNS(exe, dir)
+}
+
+// cmdDisable is `sudo shoo disable`: the proxy setting and DNS.
+func cmdDisable(_, pacURL string) error {
+	err := disable(pacURL)
+	if dnsErr := disableDNS(); err == nil {
+		err = dnsErr
+	}
+	return err
+}
+
+// platformCommand runs commands only this system has.
+func platformCommand(string, string) (bool, error) { return false, nil }
+
+// applyNetwork is setup's last step: the PAC setting on every network
+// service and, with wantDNS, the DNS service. One sudo prompt.
+func applyNetwork(exe, dir, addr, pacURL string, wantDNS bool) error {
+	needPAC := !enabledEverywhere(pacURL)
+	needDNSOn := wantDNS && !(dnsInstalledFrom(exe) && dnsEverywhere() && dnsAnswers())
+	needDNSOff := !wantDNS && dnsInstalled()
+	if !needPAC && !needDNSOn && !needDNSOff {
+		fmt.Println("  already on")
+		return nil
+	}
+	fmt.Println("  changing network settings needs your password (sudo)")
+	if !ownedByRoot(exe) {
+		fmt.Printf("  note: %s can be changed without a password; installing with install.sh\n"+
+			"  makes it admin-owned, so nothing can swap it before it runs with sudo\n", exe)
+	}
+	args := []string{exe, "enable", "-addr", addr}
+	if wantDNS {
+		args = append(args, "-dns", "-data", dir)
+	}
+	if err := sudoRun(args...); err != nil {
+		return fmt.Errorf("turning on the network settings: %w", err)
+	}
+	if needDNSOff {
+		if err := sudoRun(exe, "disable-dns"); err != nil {
+			return fmt.Errorf("removing the DNS service: %w", err)
 		}
-	} else {
-		fmt.Println("  NOT trusted (run `shoo trust`)")
 	}
+	return nil
+}
 
-	fmt.Printf("Proxy on %s:\n", addr)
-	c := http.Client{Timeout: 2 * time.Second}
-	if resp, err := c.Get(pacURL); err != nil {
-		fmt.Println("  NOT running (run `shoo run`)")
-	} else {
-		io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
-		fmt.Println("  running")
-	}
+// turnOffNetwork is uninstall's network step (asks for the password).
+func turnOffNetwork(exe, addr, _ string) error {
+	return sudoRun(exe, "disable", "-addr", addr)
+}
 
-	fmt.Println("Background service:")
-	set := loadSettings(dir)
-	if agentLoaded() && set.StartAtLogin {
-		fmt.Println("  installed (starts at login)")
-	} else if agentLoaded() {
-		fmt.Println("  installed (doesn't start at login: run `shoo start`)")
-	} else if p, err := agentPlistPath(); err == nil && fileExists(p) {
-		fmt.Println("  stopped (run `shoo start`)")
-	} else {
-		fmt.Println("  not installed (run `shoo setup`)")
-	}
-
-	fmt.Println("Other websites:")
-	if set.Sites == sitesOff {
-		fmt.Println("  off (YouTube only; change with `shoo setup`)")
-	} else if fi, err := os.Stat(filepath.Join(dir, sites.BlocklistFile)); err != nil {
-		fmt.Println("  no ad-domain list (run `shoo update-lists`)")
-	} else if l, err := sites.Load(dir); err == nil {
-		fmt.Printf("  %d ad domains, list updated %s\n", l.Len(), fi.ModTime().Format("2006-01-02 15:04"))
-		if r, err := cosmetic.Load(dir); err == nil && r.Len() > 0 {
-			fmt.Printf("  %d rules for hiding ad boxes\n", r.Len())
-			if nr, err := netfilter.Load(dir, cosmetic.ListFile); err == nil {
-				fmt.Printf("  %d URL rules (single ad scripts, images, trackers)\n", nr.Len())
-			}
-		} else {
-			fmt.Println("  no element-hiding lists (run `shoo update-lists`)")
-		}
-		fmt.Printf("  %d sites never decrypted (banks, logins, Apple...; add with `shoo skip`)\n", len(sites.Exclusions()))
-	}
-	var st sites.Stats
-	if resp, err := c.Get("http://" + addr + "/stats"); err == nil {
-		if resp.StatusCode == http.StatusOK && json.NewDecoder(resp.Body).Decode(&st) == nil {
-			fmt.Println("  " + statsSummary(loadStats(dir, addr), time.Now()))
-		} else {
-			fmt.Println("  proxy is running YouTube-only (-sites=false)")
-		}
-		resp.Body.Close()
-	}
-
-	if set.Sites != sitesOff {
-		dnsStatus()
-	}
-
+// networkStatus is the last part of `shoo status`: each network service's
+// proxy and DNS setting.
+func networkStatus(pacURL string, showDNS bool) {
 	fmt.Println("Network services:")
 	svcs, _ := networkServices()
 	for _, svc := range svcs {
@@ -256,26 +279,27 @@ func status(dir, addr, pacURL string) {
 		}
 		if usesShooDNS(svc) {
 			line += ", DNS shoo"
-		} else if set.Sites != sitesOff {
+		} else if showDNS {
 			line += ", DNS not shoo"
 		}
 		fmt.Printf("  %-24s %s\n", svc, line)
 	}
 }
 
-// isShooPAC reports whether url is shoo's PAC file, any version of it.
-func isShooPAC(url, pacURL string) bool {
-	base, _, _ := strings.Cut(pacURL, "?")
-	return url == base || strings.HasPrefix(url, base+"?")
-}
-
-func run(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
-	return cmd.Run()
-}
-
-func fileExists(p string) bool {
-	_, err := os.Stat(p)
-	return err == nil
+// permissionsText is the password summary setup shows before it starts.
+func permissionsText(trusted bool) string {
+	certLine := "• macOS asks for your password once, to trust shoo's certificate.\n" +
+		"  With it shoo decrypts websites on this Mac to remove ads and hide ad\n" +
+		"  boxes. Banks, logins, payments and Apple services are never\n" +
+		"  decrypted, and the certificate can't be used for them. The key\n" +
+		"  never leaves your Mac."
+	if trusted {
+		certLine = "• The certificate is already trusted: no password needed for it\n" +
+			"  (unless it's old or expires soon: then it's replaced, which asks once)."
+	}
+	return certLine + "\n" +
+		"• Terminal asks for your password (sudo) once, to point macOS's network\n" +
+		"  settings at shoo: websites go through its proxy, and (if blocking other\n" +
+		"  websites) its DNS service answers ad domains with a dead address.\n" +
+		"• Running in the background needs no password."
 }

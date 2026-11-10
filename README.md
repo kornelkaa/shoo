@@ -1,7 +1,8 @@
 # shoo
 
-Blocks ads in Safari on macOS, and hides the empty boxes they leave behind. A local proxy
-decrypts the websites you visit, on your Mac, and cleans them up before Safari shows them.
+Blocks ads in Safari on macOS and in Chrome and Firefox on Linux, and hides the empty boxes
+they leave behind. A local proxy decrypts the websites you visit, on your computer, and cleans
+them up before the browser shows them. (Linux: see [Linux](#linux) for what's different.)
 
 - **Ad domains** ([StevenBlack](https://github.com/StevenBlack/hosts) +
   [HaGeZi Pro](https://github.com/hagezi/dns-blocklists), ~280k domains): the proxy answers
@@ -60,7 +61,8 @@ In Terminal:
 curl -fsSL https://raw.githubusercontent.com/kornelkaa/shoo/main/install.sh | sh
 ```
 
-This downloads the latest release (one file for Apple Silicon and Intel Macs), checks its
+This downloads the latest release (one file for Apple Silicon and Intel Macs; on Linux the
+amd64 or arm64 build), checks its
 SHA-256 checksum, puts `shoo` in `/usr/local/bin` owned by root (asks for your password; setup
 later runs this file with sudo, so nothing running as you should be able to replace it) and
 starts `shoo setup`. To read the script first: download [install.sh](install.sh), look at it, then run
@@ -91,6 +93,37 @@ questions). Then it:
 
 Then quit Safari (⌘Q) and open it again. Running `setup` again is safe.
 
+## Linux
+
+The same commands work on Linux distributions with systemd and a GNOME or KDE desktop
+(Ubuntu, Fedora, Debian, Arch, ...). Install `certutil` first, which Chrome and Firefox need
+to trust shoo's certificate: `sudo apt install libnss3-tools` (Debian, Ubuntu),
+`sudo dnf install nss-tools` (Fedora) or `sudo pacman -S nss` (Arch). Then run the install
+command above. `setup` does this:
+
+1. creates the certificate and trusts it in three places: Chrome's certificate database
+   (`~/.pki/nssdb`) and every Firefox profile (no password), and the system store with
+   `update-ca-certificates` or `update-ca-trust` (sudo) for curl and other apps
+2. downloads the lists, as on macOS
+3. installs the background service as a systemd user service
+   (`~/.config/systemd/user/shoo.service`)
+4. sets the automatic proxy URL in GNOME's and KDE's proxy settings (no password; Chrome
+   and Firefox use them by default) and, if blocking other websites, installs the DNS
+   service (`/etc/systemd/system/shoo-dns.service`, sudo). It runs as you, with only the
+   right to open the DNS port, from a root-owned copy of shoo in `/usr/local/libexec/shoo`.
+   NetworkManager sends all lookups to it (`/etc/NetworkManager/conf.d/90-shoo-dns.conf`);
+   `shoo uninstall` deletes that file and DNS is back as it was.
+
+Then close your browser completely and open it again. Files: settings and lists in
+`~/.config/shoo`, the log in `~/.local/state/shoo/shoo.log`, the DNS log in
+`/var/log/shoo-dns.log`.
+
+Limits on Linux: other desktops (Xfce, Sway, ...) need the proxy URL set by hand
+(`shoo status` shows it); without NetworkManager there's no DNS blocking (the proxy still
+blocks ad domains for browsers). A Firefox profile made after setup needs `shoo trust`
+once. Browsers that ignore the desktop's proxy setting (some Flatpak builds, or Firefox set
+to its own proxy settings) aren't cleaned up.
+
 ## Everyday use
 
 ```sh
@@ -113,7 +146,7 @@ Blocking levels, scored on the
 | `strict` (default) | StevenBlack + HaGeZi Pro | ~280k | 98% |
 | `max` | StevenBlack + HaGeZi Pro++ | ~290k | 98%, blocks more trackers the test doesn't check |
 
-Logs: `~/Library/Logs/shoo.log` (`removed N ad fields` on YouTube, list refreshes, errors) and
+Logs (macOS; see [Linux](#linux) for its paths): `~/Library/Logs/shoo.log` (`removed N ad fields` on YouTube, list refreshes, errors) and
 `/Library/Logs/shoo-dns.log`. Blocked domains aren't logged by name, so the logs don't become
 a record of the sites you visit (`shoo-debug` logs them).
 
@@ -141,7 +174,8 @@ go build -o shoo-debug ./cmd/shoo-debug
 ./shoo-debug        # stop `shoo run` first; Ctrl+C when done
 ```
 
-Results go to `~/Library/Logs/shoo-debug/<time>/events.log` and stay on your Mac.
+Results go to `~/Library/Logs/shoo-debug/<time>/events.log` (Linux:
+`~/.local/state/shoo-debug/<time>/events.log`) and stay on your computer.
 `AD-EVENT` lines are the player reporting an ad; `LEAK?` lines are responses that still
 contain ad data after shoo's removal (saved in `responses/`).
 
@@ -155,8 +189,10 @@ sudo rm /usr/local/bin/shoo    # removes the command itself
 ## Releasing
 
 `scripts/release.sh 0.5.2` (from `main`, everything committed) runs the tests, builds one
-universal `shoo` for Apple Silicon and Intel, tags `v0.5.2` and publishes `shoo-macos.tar.gz`
-and its `.sha256` as a GitHub release. `install.sh` always installs the latest release.
+universal `shoo` for Apple Silicon and Intel and the two Linux builds, tags `v0.5.2` and
+publishes `shoo-macos.tar.gz`, `shoo-linux-amd64.tar.gz`, `shoo-linux-arm64.tar.gz` and their
+`.sha256` files as a GitHub release. CI (`.github/workflows/ci.yml`) runs the tests on
+macOS and Linux for every pull request. `install.sh` always installs the latest release.
 
 ## Layout
 
@@ -179,7 +215,9 @@ and its `.sha256` as a GitHub release. `install.sh` always installs the latest r
   root-owned copy of shoo in `/Library/Application Support/shoo`; it opens port 53 and then
   switches to your user
 - `internal/local` – keeps shoo's servers reachable only from this Mac (loopback addresses)
-- `cmd/shoo` – CLI, macOS integration (`security`, `networksetup`), `setup`/`uninstall` and the background service
+- `cmd/shoo` – CLI, `setup`/`uninstall`/`status` and the background service. macOS
+  integration (`security`, `networksetup`, launchd) is in `macos*.go`; Linux (systemd,
+  `certutil`, `gsettings`/KDE settings, NetworkManager) in `linux*.go`
 - `cmd/shoo-debug` – the proxy plus YouTube recording, for when an ad gets through
 - `install.sh` – the curl installer; `scripts/release.sh` – publishes a release
 

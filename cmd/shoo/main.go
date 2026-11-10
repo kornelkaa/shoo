@@ -1,4 +1,4 @@
-// Command shoo removes ads in Safari on macOS. A
+// Command shoo removes ads in Safari on macOS and in browsers on Linux. A
 // local proxy (internal/proxy) decrypts websites, removes YouTube's ad data,
 // answers requests to ad domains itself, and hides the boxes ads leave
 // behind with EasyList's element-hiding rules (internal/cosmetic). A local
@@ -15,7 +15,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -43,7 +42,7 @@ const pacVersion = "2"
 // version is set at build time: -ldflags "-X main.version=0.1.0".
 var version = "dev"
 
-const usage = `shoo - block ads in Safari on macOS
+var usage = `shoo - block ads on ` + osName + `
 
 Usage:
   shoo setup [-yes]         set up shoo: asks a few questions, then your password
@@ -63,16 +62,10 @@ Usage:
   shoo version
 
 Individual steps (setup does these for you):
-  shoo init-ca [-force]     create this Mac's YouTube-only certificate
+  shoo init-ca [-force]     create this ` + computerName + `'s certificate
   shoo trust                trust the certificate (asks for your password)
   shoo run [-sites=false]   start the proxy (-sites=false: YouTube only)
-  sudo shoo enable [-force] [-dns -data DIR]
-                            turn shoo on in macOS network settings
-                               (-dns: also install the ad-blocking DNS service
-                               for the shoo folder DIR and use it as DNS)
-  sudo shoo disable         turn shoo off in macOS network settings (also DNS)
-  sudo shoo disable-dns     only remove the DNS service and restore DNS
-  shoo untrust              remove the certificate from the keychain
+` + usageSteps + `  shoo untrust              remove the certificate from the ` + certStore + `
 
 All commands accept -addr (default ` + defaultAddr + `).
 `
@@ -121,9 +114,8 @@ func main() {
 			}
 		}
 	case "stop":
-		exec.Command("launchctl", "bootout", guiDomain()+"/"+agentLabel).Run()
-		fmt.Println("shoo is stopped until `shoo start` (or your next login, if it starts at login).")
-		fmt.Println("Meanwhile YouTube shows ads. Ad domains on other sites stay blocked (DNS keeps running).")
+		stopAgent()
+		fmt.Println(stopNote)
 	case "uninstall":
 		err = uninstall(dir, *addr, pacURL, *purge)
 	case "version", "-version", "--version":
@@ -141,21 +133,12 @@ func main() {
 	case "untrust":
 		err = untrust(dir)
 		if err == nil {
-			fmt.Println("Certificate removed from keychain.")
+			fmt.Println("Certificate removed from the " + certStore + ".")
 		}
 	case "enable":
-		err = enable(pacURL, *force)
-		if err == nil && *dnsOn {
-			var exe string
-			if exe, err = os.Executable(); err == nil {
-				err = enableDNS(exe, dir)
-			}
-		}
+		err = cmdEnable(dir, pacURL, *force, *dnsOn)
 	case "disable":
-		err = disable(pacURL)
-		if dnsErr := disableDNS(); err == nil {
-			err = dnsErr
-		}
+		err = cmdDisable(dir, pacURL)
 	case "disable-dns":
 		err = disableDNS()
 	case "dns":
@@ -187,8 +170,11 @@ func main() {
 	case "run":
 		err = runProxy(dir, *addr, *sitesOn)
 	default:
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
+		var ok bool
+		if ok, err = platformCommand(cmd, dir); !ok {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
 	}
 	if err != nil {
 		log.Fatal(err)
@@ -213,7 +199,7 @@ func addDomain(dir, cmd, arg string) error {
 	if err := sites.AddDomain(dir, file, d); err != nil {
 		return err
 	}
-	fmt.Printf("Added %s to %s. A running proxy picks it up within a minute; reopen Safari if it doesn't.\n", d, file)
+	fmt.Printf("Added %s to %s. A running proxy picks it up within a minute; %s.\n", d, file, reopenBrief)
 	return nil
 }
 
@@ -319,8 +305,8 @@ func urlKind(typ string) string {
 	return stats.Other
 }
 
-// saveOnExit saves the stats when the process is stopped (launchd sends
-// SIGTERM), then exits.
+// saveOnExit saves the stats when the process is stopped (launchd and
+// systemd send SIGTERM), then exits.
 func saveOnExit(rec *stats.Recorder) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -365,7 +351,7 @@ func watchFile(path string, every time.Duration, changed func()) {
 	}
 }
 
-// dataDir is ~/Library/Application Support/shoo. Under sudo it is only used
+// dataDir is ~/Library/Application Support/shoo (macOS) or ~/.config/shoo (Linux). Under sudo it is only used
 // by commands that don't need it (enable/disable).
 func dataDir() (string, error) {
 	base, err := os.UserConfigDir()
